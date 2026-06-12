@@ -20,6 +20,11 @@ from ductor_bot.config import ANTIGRAVITY_MODELS
 from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 from ductor_bot.infra.process_tree import force_kill_process_tree
 
+# Reuse the cross-platform directory-link helper (symlink with Windows junction
+# fallback) to work around agy's hidden-dotted-workspace bug; see
+# _safe_agy_workspace below.
+from ductor_bot.workspace.skill_sync import _create_dir_link
+
 if TYPE_CHECKING:
     from ductor_bot.cli.timeout_controller import TimeoutController
 
@@ -60,7 +65,22 @@ class AntigravityCLI(BaseCLI):
         self._config = config
         self._working_dir = Path(config.working_dir).resolve()
         self._cli = "agy"
+        self._agy_workspace_cache: Path | None = None
         logger.info("AntigravityCLI: cwd=%s model=%s", self._working_dir, config.model)
+
+    @property
+    def _agy_workspace(self) -> Path:
+        """Path agy accepts as a workspace; resolved lazily on first use.
+
+        agy rejects any workspace whose path has a dot-prefixed ancestor (e.g.
+        ~/.ductor/workspace) and falls back to its scratch sandbox, so the
+        workspace is exposed through a non-dotted symlink. That symlink is
+        created only here -- when agy is actually about to run -- so it never
+        appears for users who only use claude/codex/gemini.
+        """
+        if self._agy_workspace_cache is None:
+            self._agy_workspace_cache = _safe_agy_workspace(self._working_dir)
+        return self._agy_workspace_cache
 
     def _build_command(
         self,
@@ -85,7 +105,7 @@ class AntigravityCLI(BaseCLI):
         # cwd, this also keeps main agent, sub-agents and topics that use
         # distinct working dirs isolated -- and matches the cwd the transcript
         # reader resolves the answer from.
-        cmd += ["--add-dir", str(self._working_dir)]
+        cmd += ["--add-dir", str(self._agy_workspace)]
 
         if self._config.model and self._config.model not in ANTIGRAVITY_MODELS:
             cmd += ["--model", self._config.model]
@@ -115,7 +135,7 @@ class AntigravityCLI(BaseCLI):
         """
         if self._config.docker_container:
             logger.info("Antigravity runs on host; ignoring Docker container for agy")
-        return cmd, str(self._working_dir)
+        return cmd, str(self._agy_workspace)
 
     # -- Process tracking -----------------------------------------------------
 
@@ -213,7 +233,7 @@ class AntigravityCLI(BaseCLI):
         # bug antigravity-cli#76), so prefer agy's own transcript file, which
         # also yields the clean final answer without tool-call narration.
         # stdout is the fallback for environments/versions where it works.
-        transcript_answer = _read_transcript_answer(self._working_dir, env)
+        transcript_answer = _read_transcript_answer(self._agy_workspace, env)
         if transcript_answer is not None:
             logger.debug("Antigravity answer read from transcript")
             result_text = transcript_answer
@@ -274,6 +294,58 @@ def _safe_command_for_logging(cmd: list[str]) -> list[str]:
     if "--print" in cmd and safe:
         safe[-1] = "<prompt>"
     return safe
+
+
+# -- Workspace path (workaround for antigravity-cli#20) ------------------------
+#
+# agy rejects any workspace folder whose path contains a dot-prefixed ancestor
+# ("... is hidden: ignore uri") and silently falls back to its scratch sandbox,
+# so ductor's ~/.ductor/workspace is never accepted. agy checks the literal path
+# it is given, not the resolved target, so a non-dotted directory symlink to the
+# real workspace works around it.
+# See https://github.com/google-antigravity/antigravity-cli/issues/20
+
+
+def _safe_agy_workspace(working_dir: Path) -> Path:
+    """Return a path agy will accept as a workspace for *working_dir*.
+
+    If *working_dir* has a dot-prefixed ancestor, expose it via a non-dotted
+    sibling symlink and return the symlinked path. Falls back to *working_dir*
+    if there is no such ancestor or the symlink cannot be created (agy then uses
+    its scratch sandbox -- degraded, not broken).
+    """
+    if "/." not in working_dir.as_posix():
+        return working_dir
+
+    parts = working_dir.parts
+    for index, segment in enumerate(parts):
+        if segment.startswith(".") and segment not in (".", ".."):
+            dot_ancestor = Path(*parts[: index + 1])
+            link = dot_ancestor.with_name(segment[1:])  # strip the leading dot
+            remainder = Path(*parts[index + 1 :]) if index + 1 < len(parts) else Path()
+            if _ensure_agy_link(link, dot_ancestor):
+                return link / remainder
+            return working_dir
+    return working_dir
+
+
+def _ensure_agy_link(link: Path, target: Path) -> bool:
+    """Idempotently point the non-dotted *link* at *target*; return success."""
+    try:
+        if link.is_symlink():
+            if link.resolve() == target.resolve():
+                return True
+            link.unlink()
+        elif link.exists():
+            # A real directory occupies the path -- never clobber it.
+            logger.warning("Antigravity: %s exists and is not a symlink; using scratch", link)
+            return False
+        link.parent.mkdir(parents=True, exist_ok=True)
+        _create_dir_link(link, target)
+    except OSError as exc:
+        logger.warning("Antigravity: could not link %s -> %s (%s)", link, target, exc)
+        return False
+    return link.exists()
 
 
 # -- Transcript reading (workaround for antigravity-cli#76) --------------------

@@ -47,7 +47,30 @@ def test_antigravity_command_grounds_in_workspace() -> None:
     cmd = cli._build_command("hi")
 
     assert "--add-dir" in cmd
-    assert cmd[cmd.index("--add-dir") + 1]  # resolved per-agent working dir
+    assert cmd[cmd.index("--add-dir") + 1] == str(cli._agy_workspace)
+
+
+def test_antigravity_dotted_workspace_mapped_to_symlink(tmp_path: Path) -> None:
+    # agy rejects dot-prefixed ancestors (e.g. ~/.ductor/workspace), so ductor
+    # exposes the workspace via a non-dotted symlink that still resolves back.
+    dotted = tmp_path / ".ductor" / "workspace"
+    dotted.mkdir(parents=True)
+
+    cli = AntigravityCLI(CLIConfig(provider="antigravity", working_dir=str(dotted)))
+
+    assert "/." not in cli._agy_workspace.as_posix()
+    assert cli._agy_workspace.resolve() == dotted.resolve()
+    cmd = cli._build_command("hi")
+    assert cmd[cmd.index("--add-dir") + 1] == str(cli._agy_workspace)
+
+
+def test_antigravity_plain_workspace_unchanged(tmp_path: Path) -> None:
+    plain = tmp_path / "proj"
+    plain.mkdir()
+
+    cli = AntigravityCLI(CLIConfig(provider="antigravity", working_dir=str(plain)))
+
+    assert cli._agy_workspace == plain.resolve()
 
 
 def test_antigravity_command_includes_selected_model() -> None:
@@ -297,7 +320,7 @@ class TestSendUsesTranscript:
 
     async def test_prefers_transcript_over_stdout(self, isolated_agy_state: Path) -> None:
         cli = _make_cli()
-        _map_cwd(isolated_agy_state, cli._working_dir, "conv-1")
+        _map_cwd(isolated_agy_state, cli._agy_workspace, "conv-1")
         _write_transcript(isolated_agy_state, "conv-1", [{**_PLANNER, "content": "clean answer"}])
         proc = _make_oneshot_process(b"verbose narration on stdout")
 
