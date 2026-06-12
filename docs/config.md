@@ -145,6 +145,7 @@ Notes:
 | `claude` | `list[str]` | `[]` | Extra args appended to Claude CLI command |
 | `codex` | `list[str]` | `[]` | Extra args appended to Codex CLI command |
 | `gemini` | `list[str]` | `[]` | Extra args appended to Gemini CLI command |
+| `antigravity` | `list[str]` | `[]` | Extra args appended to Antigravity (`agy`) CLI command |
 
 Used by `CLIServiceConfig` for main-chat calls.
 
@@ -154,7 +155,7 @@ Argument shape note:
 
 Automation note:
 
-- cron/webhook `cron_task` runs use task-level `cli_parameters` from `cron_jobs.json` / `webhooks.json` (no merge with global `cli_parameters`).
+- cron/webhook `cron_task` runs merge global provider-specific `cli_parameters` first, then task-level `cli_parameters` from `cron_jobs.json` / `webhooks.json`.
 
 ## `TimeoutConfig`
 
@@ -516,12 +517,17 @@ Restart classification is computed from `AgentConfig` top-level schema fields.
 
 `ModelRegistry` (`ductor_bot/config.py`):
 
-- Claude models are hardcoded: `haiku`, `sonnet`, `opus`, plus the 1M-context variants `sonnet[1m]` and `opus[1m]` (Claude CLI strips the `[1m]` suffix and sets the 1M-context beta header internally).
+- Claude models are hardcoded: `haiku`, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, and `fable` (Claude CLI strips the `[1m]` suffix and sets the 1M-context beta header internally).
 - Gemini aliases are hardcoded: `auto`, `pro`, `flash`, `flash-lite`.
 - Runtime Gemini models are discovered from local Gemini CLI files at startup.
+- Antigravity has a built-in `antigravity-default` model and runtime model display names discovered from `agy models`.
+  The Telegram `/model` selector currently exposes only `antigravity-default`
+  because `agy` model selection is not reliable there; discovered display names
+  are still known to directives and API provider metadata.
 - Provider resolution (`provider_for(model_id)`):
-  - Claude when in `CLAUDE_MODELS`,
+  - Claude when in `CLAUDE_MODELS` or when model looks like `claude-*`,
   - Gemini when in aliases/discovered set or when model looks like `gemini-*`/`auto-gemini-*`,
+  - Antigravity when in the built-in/discovered set or when model looks like `antigravity-*`,
   - otherwise Codex.
 
 ## Timezone Resolution
@@ -571,6 +577,19 @@ Behavior:
 - startup load uses cached data when fresh and refreshes only when stale/missing,
 - refreshed hourly in background,
 - refresh callback updates runtime Gemini model registry (`set_gemini_models(...)`) used by directives and model selector.
+
+## Antigravity Model Cache
+
+Path: `~/.ductor/config/antigravity_models.json`.
+
+Behavior:
+
+- loaded at orchestrator startup (`AntigravityCacheObserver.start()`),
+- startup load uses cached data when fresh and refreshes only when stale/missing,
+- refreshed hourly in background,
+- refresh callback updates runtime Antigravity model registry (`set_antigravity_models(...)`) used by directives and API provider metadata.
+- the Telegram `/model` selector intentionally offers only `antigravity-default`
+  and displays the current `agy` model-selection limitation.
 
 ## `agents.json` (Multi-Agent Registry)
 

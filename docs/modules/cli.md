@@ -15,7 +15,7 @@ Provider-agnostic CLI execution layer for Claude Code, Codex, Gemini, and Antigr
 - `claude_provider.py`: Claude subprocess wrapper
 - `codex_provider.py`: Codex subprocess wrapper
 - `gemini_provider.py`: Gemini subprocess wrapper
-- `antigravity_provider.py`: Antigravity (`agy`) subprocess wrapper — always runs on the host, even with the Docker sandbox enabled (the sandbox image ships no `agy` binary or auth state). `agy` has no headless streaming mode (`--print` is one-shot; `--prompt-interactive` needs a TTY), so `send_streaming` reuses the `--print` path and re-emits the answer as a single text delta plus result event
+- `antigravity_provider.py`: Antigravity (`agy`) subprocess wrapper — always runs on the host, even with the Docker sandbox enabled (the sandbox image ships no `agy` binary or auth state). `agy` has no headless streaming mode (`--print` is one-shot; `--prompt-interactive` needs a TTY), so `send_streaming` reuses the `--print` path. Because `agy --print` silently drops stdout in non-TTY subprocesses (upstream bug `google-antigravity/antigravity-cli#76`), the answer is read back from agy's own transcript (`<home>/.gemini/antigravity-cli/brain/<conv-id>/.system_generated/logs/transcript.jsonl`, the final `PLANNER_RESPONSE` entry — clean, without tool-call narration), with stdout as fallback. `--print <prompt>` is placed last and adjacent (it consumes the next token as its prompt value), and agy is grounded in the per-agent workspace via `--add-dir`
 - `stream_events.py`: normalized stream events + Claude stream parser
 - `codex_events.py`: Codex JSONL parser
 - `gemini_events.py`: Gemini NDJSON + JSON parser
@@ -29,7 +29,7 @@ Provider-agnostic CLI execution layer for Claude Code, Codex, Gemini, and Antigr
 - `param_resolver.py`: task override resolution for cron/webhook one-shot runs
 - `codex_cache.py`, `codex_cache_observer.py`: Codex model cache + observer
 - `gemini_cache.py`, `gemini_cache_observer.py`: Gemini model cache + observer
-- `antigravity_cache.py`, `antigravity_cache_observer.py`: Antigravity model cache + observer (refreshes `~/.ductor/antigravity_models.json` from `agy models`, hourly)
+- `antigravity_cache.py`, `antigravity_cache_observer.py`: Antigravity model cache + observer (refreshes `~/.ductor/config/antigravity_models.json` from `agy models`, hourly)
 
 ## Execution path
 
@@ -66,6 +66,7 @@ Configured globally in `config.json`:
 - `cli_parameters.claude`
 - `cli_parameters.codex`
 - `cli_parameters.gemini`
+- `cli_parameters.antigravity`
 
 `CLIService` forwards them per provider.
 
@@ -75,12 +76,13 @@ Used by cron and webhook `cron_task` runs.
 
 - input: `TaskOverrides(provider, model, reasoning_effort, cli_parameters)`
 - output: immutable `TaskExecutionConfig`
+- supported one-shot providers: `claude`, `codex`, `gemini`
 - validation:
-  - Claude model in `haiku|sonnet|opus`
+  - Claude model in `CLAUDE_MODELS`
   - Codex model validated against `CodexModelCache`
   - Gemini model validated against aliases/discovered IDs or `gemini-*` patterns
 - Codex reasoning effort applied only when supported by model
-- task `cli_parameters` are task-level only (no merge with global provider args)
+- task `cli_parameters` are appended after the global provider-specific args
 
 ## Streaming model
 
@@ -180,6 +182,17 @@ Statuses: `AUTHENTICATED`, `INSTALLED`, `NOT_FOUND`.
 - loaded on startup (uses cache when fresh, refreshes when stale/missing)
 - hourly refresh loop
 - refresh callback updates runtime Gemini model registry (`set_gemini_models`)
+
+### Antigravity cache
+
+- file: `~/.ductor/config/antigravity_models.json`
+- discovery source: `discover_antigravity_models()` (`antigravity_discovery.py`) via `agy models`
+- loaded on startup (uses cache when fresh, refreshes when stale/missing)
+- hourly refresh loop
+- refresh callback updates runtime Antigravity model registry (`set_antigravity_models`)
+- the Telegram model selector currently offers only `antigravity-default` and
+  explains that `agy` model selection is not reliable there; discovered names
+  remain available for directive/API provider metadata.
 
 ## Process registry
 

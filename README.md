@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Claude Code, Codex CLI, and Gemini CLI as your coding assistant — on Telegram and Matrix.</strong><br>
+  <strong>Claude Code, Codex CLI, Gemini CLI, and Antigravity CLI as your coding assistant — on Telegram and Matrix.</strong><br>
   Uses only official CLIs. Nothing spoofed, nothing proxied. Multi-transport, automation, and sub-agents in one runtime.
 </p>
 
@@ -23,7 +23,7 @@
 
 ---
 
-If you want to control Claude Code, Google's Gemini CLI, or OpenAI's Codex CLI via Telegram or Matrix, build automations, or manage multiple agents easily — ductor is the right tool for you. The messaging layer is modular: Telegram and Matrix ship today, and new transports plug into the same transport-agnostic core.
+If you want to control Claude Code, Google's Gemini CLI, OpenAI's Codex CLI, or Antigravity CLI via Telegram or Matrix, build automations, or manage multiple agents easily — ductor is the right tool for you. The messaging layer is modular: Telegram and Matrix ship today, and new transports plug into the same transport-agnostic core.
 
 ductor runs on your machine and sends simple console commands as if you were typing them yourself, so you can use your active subscriptions (Claude Max, etc.) directly. No API proxying, no SDK patching, no spoofed headers. Just the official CLIs, executed as subprocesses, with all state kept in plain JSON and Markdown under `~/.ductor/`.
 
@@ -311,6 +311,7 @@ This is **hot-reloadable** — change the language without restarting the bot.
 |---|---|
 | `/model` | Interactive model/provider selector |
 | `/new` | Reset the configured default-provider session for this chat/topic |
+| `/reset` | Reset the currently active provider session for this chat/topic |
 | `/stop` | Stop current message and discard queued messages |
 | `/interrupt` | Interrupt current message, queued messages continue |
 | `/stop_all` | Kill everything — all messages, sessions, tasks, all agents |
@@ -329,7 +330,7 @@ This is **hot-reloadable** — change the language without restarting the bot.
 | `/leave <id>` | Manually leave a group |
 | `/info` | Version + links |
 
-`/new` is intentionally a factory reset for the current `SessionKey`: it clears the bucket tied to the configured default model/provider for that chat or topic, not whichever provider you last switched to temporarily via `/model`.
+`/new` is intentionally a factory reset for the current `SessionKey`: it clears the bucket tied to the configured default model/provider for that chat or topic, not whichever provider you last switched to temporarily via `/model`. Use `/reset` when you want to clear the provider bucket that is currently active in that chat or topic.
 
 ## Common CLI commands
 

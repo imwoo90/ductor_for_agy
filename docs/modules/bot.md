@@ -23,7 +23,7 @@ For shared messenger protocols and the transport registry, see
 
 Bot-level handlers:
 
-- `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/stop_all`, `/restart`, `/new`, `/session`, `/sessions`, `/tasks`, `/agent_commands`
+- `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/stop_all`, `/restart`, `/new`, `/reset`, `/session`, `/sessions`, `/tasks`, `/agent_commands`
 - main-agent only: `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`
 - hidden but supported: `/where`, `/leave` (not in Telegram command popup)
 
@@ -33,7 +33,7 @@ Immediate middleware-handled command path (pre-lock, no normal dispatch):
 
 Orchestrator-routed commands:
 
-- `/status`, `/memory`, `/model`, `/cron`, `/diagnose`, `/upgrade`, `/sessions`, `/tasks`
+- `/status`, `/memory`, `/model`, `/cron`, `/diagnose`, `/upgrade`, `/sessions`, `/tasks`, `/reset`
 
 ## Middleware behavior
 

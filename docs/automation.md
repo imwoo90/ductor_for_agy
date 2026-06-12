@@ -97,6 +97,8 @@ Runtime behavior:
    - if UNICAST delivery fails (e.g. transport unavailable), the bus cascading fallback delivers to an available transport with an explanation
 9. persist status (`last_run_status`, `last_run_at`)
 
+Cron and webhook `cron_task` one-shot execution does not support Antigravity. Set a supported provider override when the global chat provider is `antigravity`.
+
 Per-job override fields in `cron_jobs.json`:
 
 ```json
@@ -114,7 +116,7 @@ Per-job override fields in `cron_jobs.json`:
 Notes:
 
 - `reasoning_effort` is only used for Codex models that support it.
-- task `cli_parameters` are task-level only (no merge with global provider args).
+- task `cli_parameters` are appended after the global provider-specific args, so task-level flags win when the underlying CLI accepts repeated options.
 - cron status includes `error:cli_not_found_<provider>` for missing provider binaries.
 - `error:folder_missing` updates `last_run_status` but does not emit a result callback.
 - quiet-hour skips do not emit result callbacks and do not update `last_run_status`.

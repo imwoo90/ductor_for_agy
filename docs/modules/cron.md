@@ -82,6 +82,8 @@ Supported providers:
 - Codex
 - Gemini
 
+Antigravity is not supported in the cron one-shot command builder. Use a supported provider override for cron jobs when the global chat provider is `antigravity`.
+
 Examples:
 
 - Claude: `claude -p --output-format json ... --no-session-persistence -- <prompt>`

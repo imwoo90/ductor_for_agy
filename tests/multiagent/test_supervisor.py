@@ -25,6 +25,7 @@ def main_config(tmp_path: Path) -> AgentConfig:
         ductor_home=str(tmp_path),
         telegram_token="main-token",
         allowed_user_ids=[1],
+        interagent_port=0,
     )
 
 
