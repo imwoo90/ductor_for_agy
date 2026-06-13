@@ -41,6 +41,7 @@ from ductor_bot.messenger.telegram.file_browser import (
 )
 from ductor_bot.messenger.telegram.formatting import markdown_to_telegram_html
 from ductor_bot.messenger.telegram.handlers import (
+    build_reply_context,
     handle_abort,
     handle_abort_all,
     handle_command,
@@ -1408,7 +1409,11 @@ class TelegramBot:
             )
         if not message.text:
             return None
-        return strip_mention(message.text, self._bot_username)
+        text = strip_mention(message.text, self._bot_username)
+        quoted = build_reply_context(message)
+        if quoted:
+            return f"{quoted}\n\n{text}"
+        return text
 
     async def _handle_streaming(
         self, message: Message, key: SessionKey, text: str, *, thread_id: int | None = None

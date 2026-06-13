@@ -184,6 +184,55 @@ class TestStripMention:
         assert strip_mention("@bot hi", None) == "@bot hi"
 
 
+class TestBuildReplyContext:
+    """Cited-text extraction for Telegram replies (#135)."""
+
+    @staticmethod
+    def _message(
+        *,
+        quote_text: str | None = None,
+        reply_text: str | None = None,
+        reply_caption: str | None = None,
+        has_reply: bool = False,
+    ) -> Message:
+        message = MagicMock(spec=Message)
+        message.quote = MagicMock(text=quote_text) if quote_text is not None else None
+        if has_reply or reply_text is not None or reply_caption is not None:
+            message.reply_to_message = MagicMock(text=reply_text, caption=reply_caption)
+        else:
+            message.reply_to_message = None
+        return message
+
+    def test_quote_fragment_preferred(self) -> None:
+        from ductor_bot.messenger.telegram.handlers import build_reply_context
+
+        msg = self._message(quote_text="point 2", reply_text="the full brief")
+        assert build_reply_context(msg) == "> point 2"
+
+    def test_reply_text_is_quoted_per_line(self) -> None:
+        from ductor_bot.messenger.telegram.handlers import build_reply_context
+
+        msg = self._message(reply_text="line one\nline two")
+        assert build_reply_context(msg) == "> line one\n> line two"
+
+    def test_caption_used_when_no_text(self) -> None:
+        from ductor_bot.messenger.telegram.handlers import build_reply_context
+
+        msg = self._message(reply_caption="a photo caption")
+        assert build_reply_context(msg) == "> a photo caption"
+
+    def test_no_reply_returns_none(self) -> None:
+        from ductor_bot.messenger.telegram.handlers import build_reply_context
+
+        assert build_reply_context(self._message()) is None
+
+    def test_service_message_without_text_returns_none(self) -> None:
+        from ductor_bot.messenger.telegram.handlers import build_reply_context
+
+        # Forum-topic service messages carry neither text nor caption.
+        assert build_reply_context(self._message(has_reply=True)) is None
+
+
 class TestForumTopicPropagation:
     """Test that handlers extract and propagate thread_id."""
 

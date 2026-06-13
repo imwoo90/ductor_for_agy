@@ -115,6 +115,10 @@ def _make_message(
     msg.sticker = None
     msg.video_note = None
 
+    # Reply defaults: not a reply
+    msg.quote = None
+    msg.reply_to_message = None
+
     # Forum topic support
     msg.is_topic_message = topic_thread_id is not None
     msg.message_thread_id = topic_thread_id

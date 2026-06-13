@@ -204,3 +204,24 @@ def strip_mention(text: str, bot_username: str | None) -> str:
         stripped = (text[:idx] + text[idx + len(tag) :]).strip()
         return stripped or text
     return text
+
+
+def build_reply_context(message: Message) -> str | None:
+    """Return the cited text of a Telegram reply as a Markdown quote block.
+
+    Prefers the user-selected quote fragment (Bot API 7.0+) over the full
+    replied-to message body, so "expand on point 2" carries the quoted text
+    into the agent prompt (#135). Returns ``None`` when the message is not a
+    reply or the cited message carries no text — e.g. forum-topic service
+    messages or media-only replies without a caption.
+    """
+    quote = message.quote
+    cited: str | None
+    if quote is not None and quote.text:
+        cited = quote.text
+    else:
+        replied = message.reply_to_message
+        cited = (replied.text or replied.caption) if replied is not None else None
+    if not cited or not cited.strip():
+        return None
+    return "\n".join(f"> {line}" for line in cited.strip().splitlines())
