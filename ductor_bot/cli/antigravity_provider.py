@@ -115,6 +115,8 @@ class AntigravityCLI(BaseCLI):
       --log-file <path>       Override log file
     """
     _session_holders: dict[str, SessionHolder] = {}
+    _processed_log_sizes: dict[str, int] = {}
+    _sync_in_progress: dict[str, bool] = {}
 
     def __init__(self, config: CLIConfig) -> None:
         self._config = config
@@ -195,13 +197,21 @@ class AntigravityCLI(BaseCLI):
             "agy",
             "--add-dir", str(workspace),
             "--conversation", session_id,
-            "--prompt-interactive"
         ]
         if permission_mode == "bypassPermissions":
             cmd.append("--dangerously-skip-permissions")
+        cmd.extend(["--prompt-interactive", ""])
 
         try:
+            import termios
             master_fd, slave_fd = pty.openpty()
+            try:
+                attrs = termios.tcgetattr(slave_fd)
+                attrs[3] = attrs[3] & ~termios.ECHO
+                termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+            except Exception as e:
+                logger.warning("Failed to disable PTY echo: %s", e)
+
             proc = subprocess.Popen(
                 cmd,
                 stdin=slave_fd,
@@ -339,97 +349,108 @@ class AntigravityCLI(BaseCLI):
         logger.debug("Antigravity send: %s", safe_cmd)
 
         env = antigravity_process_env(build_subprocess_env(self._config))
-        if resume_session:
-            self._ensure_session_holder(resume_session, self._agy_workspace, env, self._config.permission_mode)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            creationflags=_CREATION_FLAGS,
-        )
-
-        reg, tracked = self._track_process(proc)
-
-        try:
-            timed_out = False
-            try:
-                if timeout_controller is not None:
-                    returncode = await timeout_controller.run_with_timeout(
-                        proc.wait()
-                    )
-                else:
-                    async with asyncio.timeout(effective_timeout):
-                        returncode = await proc.wait()
-                
-                # Read stdout/stderr with a short timeout to prevent hanging on open pipe FDs
-                stdout_bytes = b""
-                stderr_bytes = b""
-                try:
-                    async with asyncio.timeout(0.5):
-                        if proc.stdout is not None:
-                            stdout_bytes = await proc.stdout.read()
-                except TimeoutError:
-                    logger.debug("Stdout read timed out, ignoring")
-                try:
-                    async with asyncio.timeout(0.5):
-                        if proc.stderr is not None:
-                            stderr_bytes = await proc.stderr.read()
-                except TimeoutError:
-                    logger.debug("Stderr read timed out, ignoring")
-            except TimeoutError:
-                timed_out = True
-                logger.warning("Antigravity send timed out")
-                force_kill_process_tree(proc.pid)
-                try:
-                    async with asyncio.timeout(2.0):
-                        stdout_bytes, stderr_bytes = await proc.communicate()
-                except TimeoutError:
-                    logger.warning("proc.communicate() timed out after kill, forcing empty buffers")
-                    stdout_bytes, stderr_bytes = b"", b""
-                return CLIResponse(
-                    result="Timeout",
-                    is_error=True,
-                    timed_out=True,
-                    returncode=proc.returncode,
-                    stderr=stderr_bytes.decode(errors="replace")[:2000] if stderr_bytes else "",
-                )
-        finally:
-            self._untrack_process(reg, tracked)
-            if not timed_out and proc.returncode is None:
-                force_kill_process_tree(proc.pid)
-
-        stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
-
-        # agy --print silently drops stdout in non-TTY subprocesses (upstream
-        # bug antigravity-cli#76), so prefer agy's own transcript file, which
-        # also yields the clean final answer without tool-call narration.
-        # stdout is the fallback for environments/versions where it works.
         brain_dir = _resolve_brain_dir(self._agy_workspace, env)
         session_id = brain_dir.name if brain_dir is not None else None
 
-        transcript_answer = _read_transcript_answer(self._agy_workspace, env)
-        if transcript_answer is not None:
-            logger.debug("Antigravity answer read from transcript")
-            result_text = transcript_answer
-        else:
-            result_text = parse_antigravity_json(stdout)
-        is_error = proc.returncode not in (None, 0)
-
         if session_id:
-            self._ensure_session_holder(session_id, self._agy_workspace, env, self._config.permission_mode)
+            self.__class__._sync_in_progress[session_id] = True
 
-        return CLIResponse(
-            session_id=session_id,
-            result=result_text,
-            is_error=is_error,
-            returncode=proc.returncode,
-            stderr=stderr,
-        )
+        try:
+            if resume_session:
+                self._ensure_session_holder(resume_session, self._agy_workspace, env, self._config.permission_mode)
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+                creationflags=_CREATION_FLAGS,
+            )
+
+            reg, tracked = self._track_process(proc)
+
+            try:
+                timed_out = False
+                try:
+                    if timeout_controller is not None:
+                        returncode = await timeout_controller.run_with_timeout(
+                            proc.wait()
+                        )
+                    else:
+                        async with asyncio.timeout(effective_timeout):
+                            returncode = await proc.wait()
+                    
+                    # Read stdout/stderr with a short timeout to prevent hanging on open pipe FDs
+                    stdout_bytes = b""
+                    stderr_bytes = b""
+                    try:
+                        async with asyncio.timeout(0.5):
+                            if proc.stdout is not None:
+                                stdout_bytes = await proc.stdout.read()
+                    except TimeoutError:
+                        logger.debug("Stdout read timed out, ignoring")
+                    try:
+                        async with asyncio.timeout(0.5):
+                            if proc.stderr is not None:
+                                stderr_bytes = await proc.stderr.read()
+                    except TimeoutError:
+                        logger.debug("Stderr read timed out, ignoring")
+                except TimeoutError:
+                    timed_out = True
+                    logger.warning("Antigravity send timed out")
+                    force_kill_process_tree(proc.pid)
+                    try:
+                        async with asyncio.timeout(2.0):
+                            stdout_bytes, stderr_bytes = await proc.communicate()
+                    except TimeoutError:
+                        logger.warning("proc.communicate() timed out after kill, forcing empty buffers")
+                        stdout_bytes, stderr_bytes = b"", b""
+                    return CLIResponse(
+                        result="Timeout",
+                        is_error=True,
+                        timed_out=True,
+                        returncode=proc.returncode,
+                        stderr=stderr_bytes.decode(errors="replace")[:2000] if stderr_bytes else "",
+                    )
+            finally:
+                self._untrack_process(reg, tracked)
+                if not timed_out and proc.returncode is None:
+                    force_kill_process_tree(proc.pid)
+
+            stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+
+            # agy --print silently drops stdout in non-TTY subprocesses (upstream
+            # bug antigravity-cli#76), so prefer agy's own transcript file, which
+            # also yields the clean final answer without tool-call narration.
+            # stdout is the fallback for environments/versions where it works.
+            transcript_answer = _read_transcript_answer(self._agy_workspace, env)
+            if transcript_answer is not None:
+                logger.debug("Antigravity answer read from transcript")
+                result_text = transcript_answer
+            else:
+                result_text = parse_antigravity_json(stdout)
+            is_error = proc.returncode not in (None, 0)
+
+            if session_id:
+                self._ensure_session_holder(session_id, self._agy_workspace, env, self._config.permission_mode)
+                
+                transcript_path = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                if transcript_path.is_file():
+                    self.__class__._processed_log_sizes[str(transcript_path)] = transcript_path.stat().st_size
+
+            return CLIResponse(
+                session_id=session_id,
+                result=result_text,
+                is_error=is_error,
+                returncode=proc.returncode,
+                stderr=stderr,
+            )
+        finally:
+            if session_id:
+                self.__class__._sync_in_progress[session_id] = False
 
     # -- Streaming ------------------------------------------------------------
 

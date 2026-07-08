@@ -1688,11 +1688,20 @@ class TelegramBot:
                     except OSError:
                         continue
                         
-                    prev_size = last_sizes.get(str(transcript_path))
-                    if prev_size is None:
-                        # Initialize count to current size so we only check new lines added during this run
+                    if AntigravityCLI._sync_in_progress.get(session_id, False):
                         last_sizes[str(transcript_path)] = file_size
                         continue
+                        
+                    prev_size = last_sizes.get(str(transcript_path))
+                    sync_processed_size = AntigravityCLI._processed_log_sizes.get(str(transcript_path), 0)
+                    if prev_size is None:
+                        # Initialize count to current size or sync processed size, whichever is larger, so we only check new lines added during this run
+                        last_sizes[str(transcript_path)] = max(file_size, sync_processed_size)
+                        continue
+                        
+                    if sync_processed_size > prev_size:
+                        prev_size = sync_processed_size
+                        last_sizes[str(transcript_path)] = prev_size
                         
                     if file_size < prev_size:
                         # File was truncated or reset
