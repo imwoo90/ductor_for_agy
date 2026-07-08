@@ -33,6 +33,59 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 300.0  # 5 minutes, matches agy --print-timeout default
 
+import time
+
+class SessionHolder:
+    def __init__(self, proc, master_fd: int, reader_task: asyncio.Task) -> None:
+        self.proc = proc
+        self.master_fd = master_fd
+        self.reader_task = reader_task
+        self.last_active = time.time()
+
+
+async def _pty_drain_loop(master_fd: int, proc) -> None:
+    """Read and discard output from the master PTY fd to prevent buffering hangs."""
+    while proc.poll() is None:
+        try:
+            # Read asynchronously in worker thread
+            data = await asyncio.to_thread(os.read, master_fd, 4096)
+            if not data:
+                break
+        except OSError:
+            break
+        except Exception as e:
+            logger.debug("Error in PTY drain loop: %s", e)
+            break
+
+
+def _trust_workspace_in_settings(workspace: Path, env: Mapping[str, str] | None = None) -> None:
+    """Ensure *workspace* is added to settings.json's trustedWorkspaces."""
+    import json
+    home_dir = Path.home()
+    if env and "HOME" in env:
+        home_dir = Path(env["HOME"])
+    
+    settings_file = home_dir / ".gemini" / "antigravity-cli" / "settings.json"
+    if not settings_file.parent.is_dir():
+        return
+        
+    try:
+        data = {}
+        if settings_file.is_file():
+            try:
+                data = json.loads(settings_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                data = {}
+            
+        workspaces = data.setdefault("trustedWorkspaces", [])
+        ws_str = str(workspace.resolve())
+        if ws_str not in workspaces:
+            workspaces.append(ws_str)
+            settings_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            logger.info("Automatically trusted workspace %s in settings.json", ws_str)
+    except Exception as e:
+        logger.warning("Failed to auto-trust workspace: %s", e)
+
 
 class AntigravityCLI(BaseCLI):
     """Async wrapper around the Antigravity CLI (agy).
@@ -61,6 +114,7 @@ class AntigravityCLI(BaseCLI):
       --add-dir <dir>         Add workspace directory
       --log-file <path>       Override log file
     """
+    _session_holders: dict[str, SessionHolder] = {}
 
     def __init__(self, config: CLIConfig) -> None:
         self._config = config
@@ -68,6 +122,104 @@ class AntigravityCLI(BaseCLI):
         self._cli = "agy"
         self._agy_workspace_cache: Path | None = None
         logger.info("AntigravityCLI: cwd=%s model=%s", self._working_dir, config.model)
+
+    @classmethod
+    def _cleanup_expired_holders(cls) -> None:
+        import time
+        import signal
+        import os
+        now = time.time()
+        expired_keys = []
+        for session_id, holder in list(cls._session_holders.items()):
+            # 24 hours = 86400 seconds
+            if now - holder.last_active > 86400.0 or holder.proc.poll() is not None:
+                expired_keys.append(session_id)
+                logger.info("Cleaning up session holder for %s", session_id)
+                holder.reader_task.cancel()
+                try:
+                    if holder.proc.poll() is None:
+                        pgid = os.getpgid(holder.proc.pid)
+                        if pgid != os.getpgrp():
+                            os.killpg(pgid, signal.SIGTERM)
+                        else:
+                            holder.proc.terminate()
+                        holder.proc.wait(timeout=2.0)
+                except Exception as e:
+                    logger.debug("Error killing process group for %s: %s", session_id, e)
+                try:
+                    os.close(holder.master_fd)
+                except OSError:
+                    pass
+        for key in expired_keys:
+            cls._session_holders.pop(key, None)
+
+    @classmethod
+    def _ensure_session_holder(
+        cls,
+        session_id: str,
+        workspace: Path,
+        env: dict,
+        permission_mode: str | None = None,
+    ) -> None:
+        import time
+        import pty
+        import subprocess
+        import os
+        
+        cls._cleanup_expired_holders()
+        
+        # Check if the holder is already running and active
+        holder = cls._session_holders.get(session_id)
+        if holder is not None:
+            # Check if process is still running
+            if holder.proc.poll() is None:
+                # Update last active time
+                holder.last_active = time.time()
+                logger.debug("Session holder for %s is already active", session_id)
+                return
+            else:
+                logger.warning("Session holder for %s was dead, restarting", session_id)
+                holder.reader_task.cancel()
+                try:
+                    os.close(holder.master_fd)
+                except OSError:
+                    pass
+                cls._session_holders.pop(session_id, None)
+
+        # Natively trust the workspace folder
+        _trust_workspace_in_settings(workspace, env)
+
+        # Spawn a new session holder
+        logger.info("Spawning new session holder for %s", session_id)
+        cmd = [
+            "agy",
+            "--add-dir", str(workspace),
+            "--conversation", session_id,
+            "--prompt-interactive"
+        ]
+        if permission_mode == "bypassPermissions":
+            cmd.append("--dangerously-skip-permissions")
+
+        try:
+            master_fd, slave_fd = pty.openpty()
+            proc = subprocess.Popen(
+                cmd,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                cwd=str(workspace),
+                env=env,
+                preexec_fn=os.setsid
+            )
+            os.close(slave_fd)
+            
+            # Spawn background reader task to drain PTY buffer
+            reader_task = asyncio.create_task(_pty_drain_loop(master_fd, proc))
+            cls._session_holders[session_id] = SessionHolder(proc, master_fd, reader_task)
+            logger.info("Spawned session holder for %s (PID=%d)", session_id, proc.pid)
+        except Exception as e:
+            logger.error("Failed to spawn session holder for %s: %s", session_id, e)
 
     @property
     def _agy_workspace(self) -> Path:
@@ -187,9 +339,12 @@ class AntigravityCLI(BaseCLI):
         logger.debug("Antigravity send: %s", safe_cmd)
 
         env = antigravity_process_env(build_subprocess_env(self._config))
+        if resume_session:
+            self._ensure_session_holder(resume_session, self._agy_workspace, env, self._config.permission_mode)
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            stdin=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
@@ -202,19 +357,39 @@ class AntigravityCLI(BaseCLI):
         try:
             timed_out = False
             try:
-                communicate_coro = proc.communicate()
                 if timeout_controller is not None:
-                    stdout_bytes, stderr_bytes = await timeout_controller.run_with_timeout(
-                        communicate_coro,
+                    returncode = await timeout_controller.run_with_timeout(
+                        proc.wait()
                     )
                 else:
                     async with asyncio.timeout(effective_timeout):
-                        stdout_bytes, stderr_bytes = await communicate_coro
+                        returncode = await proc.wait()
+                
+                # Read stdout/stderr with a short timeout to prevent hanging on open pipe FDs
+                stdout_bytes = b""
+                stderr_bytes = b""
+                try:
+                    async with asyncio.timeout(0.5):
+                        if proc.stdout is not None:
+                            stdout_bytes = await proc.stdout.read()
+                except TimeoutError:
+                    logger.debug("Stdout read timed out, ignoring")
+                try:
+                    async with asyncio.timeout(0.5):
+                        if proc.stderr is not None:
+                            stderr_bytes = await proc.stderr.read()
+                except TimeoutError:
+                    logger.debug("Stderr read timed out, ignoring")
             except TimeoutError:
                 timed_out = True
                 logger.warning("Antigravity send timed out")
                 force_kill_process_tree(proc.pid)
-                stdout_bytes, stderr_bytes = await proc.communicate()
+                try:
+                    async with asyncio.timeout(2.0):
+                        stdout_bytes, stderr_bytes = await proc.communicate()
+                except TimeoutError:
+                    logger.warning("proc.communicate() timed out after kill, forcing empty buffers")
+                    stdout_bytes, stderr_bytes = b"", b""
                 return CLIResponse(
                     result="Timeout",
                     is_error=True,
@@ -234,6 +409,9 @@ class AntigravityCLI(BaseCLI):
         # bug antigravity-cli#76), so prefer agy's own transcript file, which
         # also yields the clean final answer without tool-call narration.
         # stdout is the fallback for environments/versions where it works.
+        brain_dir = _resolve_brain_dir(self._agy_workspace, env)
+        session_id = brain_dir.name if brain_dir is not None else None
+
         transcript_answer = _read_transcript_answer(self._agy_workspace, env)
         if transcript_answer is not None:
             logger.debug("Antigravity answer read from transcript")
@@ -242,7 +420,11 @@ class AntigravityCLI(BaseCLI):
             result_text = parse_antigravity_json(stdout)
         is_error = proc.returncode not in (None, 0)
 
+        if session_id:
+            self._ensure_session_holder(session_id, self._agy_workspace, env, self._config.permission_mode)
+
         return CLIResponse(
+            session_id=session_id,
             result=result_text,
             is_error=is_error,
             returncode=proc.returncode,

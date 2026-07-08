@@ -154,8 +154,20 @@ def start_bot(verbose: bool = False) -> None:
 
 def cmd_restart() -> None:
     """Stop and re-exec the bot."""
-    stop_bot()
-    _re_exec_bot()
+    import contextlib
+    service_restarted = False
+    with contextlib.suppress(Exception):
+        from ductor_bot.infra.service import is_service_installed, start_service, stop_service
+        if is_service_installed():
+            _console.print("Restarting ductor service...")
+            stop_service(_console)
+            start_service(_console)
+            service_restarted = True
+
+    if not service_restarted:
+        stop_bot()
+        _re_exec_bot()
+
 
 
 def uninstall() -> None:

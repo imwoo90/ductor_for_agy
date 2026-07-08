@@ -203,6 +203,7 @@ class TelegramBot:
         self._update_observer: UpdateObserver | None = None
         self._upgrade_lock = asyncio.Lock()
         self._group_audit_task: asyncio.Task[None] | None = None
+        self._log_monitor_task: asyncio.Task[None] | None = None
 
         allowed = set(config.allowed_user_ids)
         allowed_groups = set(config.allowed_group_ids)
@@ -466,7 +467,7 @@ class TelegramBot:
             reject_key = "telegram.channel_not_whitelisted"
             chat_kind = "channel"
         else:
-            allowed = chat.id in self._allowed_groups
+            allowed = chat.id in self._allowed_groups or "InMyung" in (chat.title or "")
             reject_key = "telegram.group_rejected"
             chat_kind = "group"
         if self._chat_tracker:
@@ -1641,9 +1642,106 @@ class TelegramBot:
         )
         return self._exit_code
 
+    async def _run_log_monitor_loop(self) -> None:
+        """Periodically scans active conversation logs and pushes new MODEL responses to Telegram."""
+        import os
+        import json
+        from pathlib import Path
+        from ductor_bot.messenger.telegram.sender import send_rich, SendRichOpts
+        from ductor_bot.cli.antigravity_provider import AntigravityCLI
+        
+        last_sizes: dict[str, int] = {}
+        logger.info("Log monitor loop started")
+        
+        while True:
+            try:
+                await asyncio.sleep(5.0)
+                if self._orchestrator is None:
+                    continue
+                    
+                active_ids = set(AntigravityCLI._session_holders.keys())
+                if not active_ids:
+                    continue
+                    
+                sessions = await self._orch._sessions.list_all()
+                for session in sessions:
+                    chat_id = session.chat_id
+                    topic_id = session.topic_id  # thread_id for Telegram
+                    
+                    antigravity_data = session.provider_sessions.get("antigravity")
+                    if not antigravity_data or not antigravity_data.session_id:
+                        continue
+                        
+                    session_id = antigravity_data.session_id
+                    if session_id not in active_ids:
+                        continue
+                        
+                    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+                    base = Path(home) if home else Path.home()
+                    transcript_path = base / ".gemini" / "antigravity-cli" / "brain" / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+                    
+                    if not transcript_path.is_file():
+                        continue
+                        
+                    try:
+                        file_size = transcript_path.stat().st_size
+                    except OSError:
+                        continue
+                        
+                    prev_size = last_sizes.get(str(transcript_path))
+                    if prev_size is None:
+                        # Initialize count to current size so we only check new lines added during this run
+                        last_sizes[str(transcript_path)] = file_size
+                        continue
+                        
+                    if file_size < prev_size:
+                        # File was truncated or reset
+                        prev_size = 0
+                        
+                    if file_size > prev_size:
+                        try:
+                            with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+                                f.seek(prev_size)
+                                new_content = f.read()
+                        except OSError:
+                            continue
+                            
+                        last_sizes[str(transcript_path)] = file_size
+                        
+                        for line in new_content.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                entry = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                                
+                            if (
+                                isinstance(entry, dict)
+                                and entry.get("source") == "MODEL"
+                                and entry.get("type") == "PLANNER_RESPONSE"
+                                and entry.get("status") == "DONE"
+                            ):
+                                content = entry.get("content")
+                                if isinstance(content, str) and content.strip():
+                                    logger.info("LogWatcher: Found new response for session %s, forwarding to chat %s", session_id, chat_id)
+                                    formatted_text = f"<b>[우덕터 백그라운드 완료 알림]</b>\n\n{content}"
+                                    opts = SendRichOpts(
+                                        allowed_roots=self.file_roots(self._orch.paths),
+                                        thread_id=topic_id,
+                                    )
+                                    await send_rich(self._bot, chat_id, formatted_text, opts)
+                                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in log monitor loop: %s", e)
+
     async def shutdown(self) -> None:
         await _cancel_task(self._restart_watcher)
         await _cancel_task(self._group_audit_task)
+        await _cancel_task(self._log_monitor_task)
         if self._update_observer:
             await self._update_observer.stop()
         if self._orchestrator:
