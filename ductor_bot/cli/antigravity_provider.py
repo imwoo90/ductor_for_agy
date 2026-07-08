@@ -117,6 +117,7 @@ class AntigravityCLI(BaseCLI):
     _session_holders: dict[str, SessionHolder] = {}
     _processed_log_sizes: dict[str, int] = {}
     _sync_in_progress: dict[str, bool] = {}
+    _shutting_down = False
 
     def __init__(self, config: CLIConfig) -> None:
         self._config = config
@@ -163,6 +164,8 @@ class AntigravityCLI(BaseCLI):
         env: dict,
         permission_mode: str | None = None,
     ) -> None:
+        if getattr(cls, "_shutting_down", False):
+            return
         import time
         import pty
         import subprocess
@@ -338,6 +341,22 @@ class AntigravityCLI(BaseCLI):
     ) -> CLIResponse:
         """Send a prompt via ``agy --print`` and return the full response."""
         effective_timeout = timeout_seconds or _DEFAULT_TIMEOUT
+        env = antigravity_process_env(build_subprocess_env(self._config))
+
+        if resume_session is None and not continue_session:
+            import uuid
+            resume_session = str(uuid.uuid4())
+
+        requested_session_existed = False
+        if resume_session:
+            session_id = resume_session
+            brain_dir = _agy_state_root(env) / "brain" / session_id
+            if brain_dir.is_dir():
+                requested_session_existed = True
+        else:
+            brain_dir = _resolve_brain_dir(self._agy_workspace, env)
+            session_id = brain_dir.name if brain_dir is not None else None
+
         cmd = self._build_command(
             prompt,
             resume_session=resume_session,
@@ -347,10 +366,6 @@ class AntigravityCLI(BaseCLI):
         cmd, cwd = self._host_command(cmd)
         safe_cmd = _safe_command_for_logging(cmd)
         logger.debug("Antigravity send: %s", safe_cmd)
-
-        env = antigravity_process_env(build_subprocess_env(self._config))
-        brain_dir = _resolve_brain_dir(self._agy_workspace, env)
-        session_id = brain_dir.name if brain_dir is not None else None
 
         if session_id:
             self.__class__._sync_in_progress[session_id] = True
@@ -422,11 +437,22 @@ class AntigravityCLI(BaseCLI):
             stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
             stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
 
+            # Resolve the actual brain directory after the run, in case agy generated a new UUID
+            actual_brain_dir = None
+            if resume_session and requested_session_existed:
+                actual_brain_dir = brain_dir
+            else:
+                actual_brain_dir = _resolve_brain_dir(self._agy_workspace, env)
+
+            if actual_brain_dir is not None:
+                brain_dir = actual_brain_dir
+                session_id = brain_dir.name
+
             # agy --print silently drops stdout in non-TTY subprocesses (upstream
             # bug antigravity-cli#76), so prefer agy's own transcript file, which
             # also yields the clean final answer without tool-call narration.
             # stdout is the fallback for environments/versions where it works.
-            transcript_answer = _read_transcript_answer(self._agy_workspace, env)
+            transcript_answer = _read_transcript_answer(self._agy_workspace, env, brain_dir=brain_dir)
             if transcript_answer is not None:
                 logger.debug("Antigravity answer read from transcript")
                 result_text = transcript_answer
@@ -435,6 +461,10 @@ class AntigravityCLI(BaseCLI):
             is_error = proc.returncode not in (None, 0)
 
             if session_id:
+                if resume_session and session_id != resume_session:
+                    holder = self.__class__._session_holders.pop(resume_session, None)
+                    if holder is not None:
+                        self.__class__._session_holders[session_id] = holder
                 self._ensure_session_holder(session_id, self._agy_workspace, env, self._config.permission_mode)
                 
                 transcript_path = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
@@ -575,13 +605,18 @@ def _agy_state_root(env: Mapping[str, str] | None = None) -> Path:
     return base / ".gemini" / "antigravity-cli"
 
 
-def _read_transcript_answer(working_dir: Path, env: Mapping[str, str] | None = None) -> str | None:
+def _read_transcript_answer(
+    working_dir: Path,
+    env: Mapping[str, str] | None = None,
+    brain_dir: Path | None = None,
+) -> str | None:
     """Return agy's final answer for *working_dir* from its transcript, or None.
 
     The answer is the last ``source=MODEL, type=PLANNER_RESPONSE, status=DONE``
     entry's ``content`` -- already free of the intermediate tool-call steps.
     """
-    brain_dir = _resolve_brain_dir(working_dir, env)
+    if brain_dir is None:
+        brain_dir = _resolve_brain_dir(working_dir, env)
     if brain_dir is None:
         return None
     transcript = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"

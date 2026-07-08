@@ -1688,9 +1688,8 @@ class TelegramBot:
                     except OSError:
                         continue
                         
-                    if AntigravityCLI._sync_in_progress.get(session_id, False):
-                        last_sizes[str(transcript_path)] = file_size
-                        continue
+                    sync_in_progress = AntigravityCLI._sync_in_progress.get(session_id, False)
+
                         
                     prev_size = last_sizes.get(str(transcript_path))
                     sync_processed_size = AntigravityCLI._processed_log_sizes.get(str(transcript_path), 0)
@@ -1717,30 +1716,83 @@ class TelegramBot:
                             
                         last_sizes[str(transcript_path)] = file_size
                         
+                        entries = []
                         for line in new_content.splitlines():
                             line = line.strip()
                             if not line:
                                 continue
                             try:
                                 entry = json.loads(line)
+                                if isinstance(entry, dict):
+                                    entries.append(entry)
                             except json.JSONDecodeError:
                                 continue
+                        
+                        if entries:
+                            thinking_blocks = []
+                            tool_calls = []
+                            tool_completions = []
+                            final_content = None
+
+                            for entry in entries:
+                                source = entry.get("source")
+                                etype = entry.get("type")
+                                status = entry.get("status")
                                 
-                            if (
-                                isinstance(entry, dict)
-                                and entry.get("source") == "MODEL"
-                                and entry.get("type") == "PLANNER_RESPONSE"
-                                and entry.get("status") == "DONE"
-                            ):
-                                content = entry.get("content")
-                                if isinstance(content, str) and content.strip():
-                                    logger.info("LogWatcher: Found new response for session %s, forwarding to chat %s", session_id, chat_id)
-                                    formatted_text = f"<b>[우덕터 백그라운드 완료 알림]</b>\n\n{content}"
-                                    opts = SendRichOpts(
-                                        allowed_roots=self.file_roots(self._orch.paths),
-                                        thread_id=topic_id,
-                                    )
-                                    await send_rich(self._bot, chat_id, formatted_text, opts)
+                                if source == "MODEL":
+                                    if etype == "PLANNER_RESPONSE":
+                                        thinking = entry.get("thinking")
+                                        if thinking and isinstance(thinking, str) and thinking.strip():
+                                            thinking_blocks.append(thinking.strip())
+                                        
+                                        tcalls = entry.get("tool_calls")
+                                        if tcalls and isinstance(tcalls, list):
+                                            for tc in tcalls:
+                                                name = tc.get("name", "unknown")
+                                                args = tc.get("args", {})
+                                                args_str = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in args.items())
+                                                tool_calls.append(f"`{name}({args_str})`")
+                                        
+                                        if status == "DONE" and not tcalls:
+                                            content = entry.get("content")
+                                            if content and isinstance(content, str) and content.strip():
+                                                if not sync_in_progress:
+                                                    final_content = content.strip()
+                                    
+                                    elif etype in ("RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "GREP_SEARCH", "GENERIC", "CODE_ACTION") and status == "DONE":
+                                        friendly_names = {
+                                            "RUN_COMMAND": "run_command (명령어 실행)",
+                                            "VIEW_FILE": "view_file (파일 보기)",
+                                            "LIST_DIRECTORY": "list_dir (디렉토리 조회)",
+                                            "GREP_SEARCH": "grep_search (패턴 검색)",
+                                            "CODE_ACTION": "replace_file_content (파일 수정)",
+                                        }
+                                        name = friendly_names.get(etype, etype.lower())
+                                        tool_completions.append(f"`{name}` 완료")
+
+                            parts = []
+                            if thinking_blocks:
+                                combined_thinking = "\n\n".join(thinking_blocks)
+                                blockquote_thinking = "\n".join(f"> {l}" for l in combined_thinking.splitlines())
+                                parts.append(f"💭 **생각 흐름:**\n{blockquote_thinking}")
+                            if tool_calls:
+                                calls_list = "\n".join(f"• {tc}" for tc in tool_calls)
+                                parts.append(f"🛠️ **도구 호출:**\n{calls_list}")
+                            if tool_completions:
+                                completions_list = "\n".join(f"• {tc}" for tc in tool_completions)
+                                parts.append(f"📥 **도구 완료:**\n{completions_list}")
+                            if final_content:
+                                parts.append(f"✅ **최종 답변:**\n{final_content}")
+
+                            if parts:
+                                header = "**[우덕터 백그라운드 완료 알림]**" if final_content else "**[우덕터 백그라운드 진행 상황]**"
+                                formatted_text = f"{header}\n\n" + "\n\n".join(parts)
+                                logger.info("LogWatcher: Forwarding progress/response to chat %s topic %s", chat_id, topic_id)
+                                opts = SendRichOpts(
+                                    allowed_roots=self.file_roots(self._orch.paths),
+                                    thread_id=topic_id,
+                                )
+                                await send_rich(self._bot, chat_id, formatted_text, opts)
                                     
             except asyncio.CancelledError:
                 break

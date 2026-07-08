@@ -191,6 +191,7 @@ async def shutdown(orch: Orchestrator) -> None:
     """Cleanup on bot shutdown."""
     try:
         from ductor_bot.cli.antigravity_provider import AntigravityCLI
+        AntigravityCLI._shutting_down = True
         import os
         import signal
         holders = list(AntigravityCLI._session_holders.items())
