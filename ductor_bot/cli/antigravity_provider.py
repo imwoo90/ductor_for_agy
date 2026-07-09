@@ -519,6 +519,16 @@ class AntigravityCLI(BaseCLI):
         safe_cmd = _safe_command_for_logging(cmd)
         logger.debug("Antigravity send: %s", safe_cmd)
 
+        # Record mtimes of existing markdown files before the run
+        mtimes_before = {}
+        if brain_dir and brain_dir.is_dir():
+            for f in brain_dir.glob("*.md"):
+                if f.is_file():
+                    try:
+                        mtimes_before[f.name] = (f.stat().st_mtime, f.stat().st_size)
+                    except OSError:
+                        pass
+
         if session_id:
             self.__class__._sync_in_progress[session_id] = True
 
@@ -611,6 +621,44 @@ class AntigravityCLI(BaseCLI):
             else:
                 result_text = parse_antigravity_json(stdout)
             is_error = proc.returncode not in (None, 0)
+
+            # Scan for new or modified markdown artifacts in the brain directory
+            new_or_modified_artifacts = []
+            if brain_dir and brain_dir.is_dir():
+                for f in brain_dir.glob("*.md"):
+                    if f.is_file():
+                        try:
+                            stat = f.stat()
+                            mtime = stat.st_mtime
+                            size = stat.st_size
+                            
+                            before = mtimes_before.get(f.name)
+                            # If it didn't exist before, or was modified, or changed in size
+                            if before is None or mtime > before[0] or size != before[1]:
+                                new_or_modified_artifacts.append(f)
+                        except OSError:
+                            pass
+
+            if new_or_modified_artifacts:
+                output_dir = self._working_dir / "output_to_user"
+                try:
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                    
+                import shutil
+                attached_tags = []
+                for art in new_or_modified_artifacts:
+                    dest = output_dir / art.name
+                    try:
+                        shutil.copy2(art, dest)
+                        attached_tags.append(f"<file:{dest.as_posix()}>")
+                        logger.info("Antigravity: Auto-attached artifact copied to output_to_user: %s", art.name)
+                    except Exception as e:
+                        logger.warning("Antigravity: Failed to copy artifact %s: %s", art.name, e)
+                        
+                if attached_tags:
+                    result_text += "\n\n" + "\n".join(attached_tags)
 
             if session_id:
                 if resume_session and session_id != resume_session:
