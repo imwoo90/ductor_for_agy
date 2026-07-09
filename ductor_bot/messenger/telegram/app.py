@@ -1608,15 +1608,6 @@ class TelegramBot:
         else:
             provider = active.provider
 
-        # Get desired commands list for this provider
-        from ductor_bot.commands import get_bot_commands, get_agy_commands
-        if provider == "antigravity":
-            cmd_defs = get_agy_commands()
-        else:
-            cmd_defs = get_bot_commands()
-
-        desired = [BotCommand(command=cmd, description=desc) for cmd, desc in cmd_defs]
-
         # Check cache to prevent redundant API calls
         if not hasattr(self, "_chat_command_states"):
             self._chat_command_states = {}
@@ -1628,11 +1619,19 @@ class TelegramBot:
         from aiogram.types import BotCommandScopeChat
         scope = BotCommandScopeChat(chat_id=chat_id)
         try:
-            await self._bot.set_my_commands(desired, scope=scope)
+            if provider == "antigravity":
+                from ductor_bot.commands import get_agy_commands
+                cmd_defs = get_agy_commands()
+                desired = [BotCommand(command=cmd, description=desc) for cmd, desc in cmd_defs]
+                await self._bot.set_my_commands(desired, scope=scope)
+                logger.info("Dynamic commands updated (override set) for chat %d: provider=%s (%d commands)", chat_id, provider, len(desired))
+            else:
+                await self._bot.delete_my_commands(scope=scope)
+                logger.info("Dynamic commands reset (override deleted -> inherited default) for chat %d: provider=%s", chat_id, provider)
+
             self._chat_command_states[chat_id] = provider
-            logger.info("Dynamic commands updated for chat %d: provider=%s (%d commands)", chat_id, provider, len(desired))
         except Exception:
-            logger.warning("Failed to update dynamic commands for chat %d", chat_id, exc_info=True)
+            logger.warning("Failed to sync dynamic commands for chat %d (provider=%s)", chat_id, provider, exc_info=True)
 
     async def _sync_commands(self) -> None:
         from aiogram.types import BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
