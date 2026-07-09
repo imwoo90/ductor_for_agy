@@ -220,6 +220,37 @@ def docker_wrap(
     return cmd, str(Path(config.working_dir).resolve())
 
 
+class LogParser(ABC):
+    """Generic interface for parsing provider logs in the background."""
+
+    @abstractmethod
+    def is_session_active(self, session_id: str) -> bool:
+        """Check if the given session is actively running/monitored."""
+        ...
+
+    @abstractmethod
+    def has_active_sessions(self) -> bool:
+        """Check if there are any active sessions for this provider."""
+        ...
+
+    @abstractmethod
+    def parse_log_delta(
+        self,
+        session_id: str,
+        transcript_path: Path,
+        prev_size: int | None,
+    ) -> tuple[int, str | None]:
+        """Read and parse new entries in the transcript log.
+
+        Returns:
+            A tuple of (new_size, formatted_telegram_text_or_none).
+        """
+    @abstractmethod
+    def get_transcript_path(self, session_id: str) -> Path:
+        """Get the absolute path to the transcript log file for the session."""
+        ...
+
+
 class BaseCLI(ABC):
     """Abstract interface for CLI backends (Claude, Codex, etc.)."""
 
@@ -242,3 +273,7 @@ class BaseCLI(ABC):
         timeout_seconds: float | None = None,
         timeout_controller: TimeoutController | None = None,
     ) -> AsyncGenerator[StreamEvent, None]: ...
+
+    def get_log_parser(self) -> LogParser | None:
+        """Return a log parser if background log monitoring is supported, else None."""
+        return None

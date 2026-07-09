@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.cli.antigravity_events import parse_antigravity_json
 from ductor_bot.cli.antigravity_runtime import antigravity_process_env
-from ductor_bot.cli.base import BaseCLI, CLIConfig
+from ductor_bot.cli.base import BaseCLI, CLIConfig, LogParser
 from ductor_bot.cli.executor import build_subprocess_env
 from ductor_bot.cli.process_registry import ProcessRegistry, TrackedProcess
 from ductor_bot.cli.stream_events import AssistantTextDelta, ResultEvent, StreamEvent
@@ -233,6 +233,10 @@ class AntigravityCLI(BaseCLI):
             logger.info("Spawned session holder for %s (PID=%d)", session_id, proc.pid)
         except Exception as e:
             logger.error("Failed to spawn session holder for %s: %s", session_id, e)
+
+    def get_log_parser(self) -> LogParser | None:
+        """Return the AntigravityLogParser."""
+        return AntigravityLogParser()
 
     @property
     def _agy_workspace(self) -> Path:
@@ -694,3 +698,131 @@ def _newest_brain_dir(brain_root: Path) -> Path | None:
             best_mtime = mtime
             best = directory
     return best
+
+
+class AntigravityLogParser(LogParser):
+    """Encapsulates the agy-specific transcript.jsonl log parsing logic."""
+
+    def is_session_active(self, session_id: str) -> bool:
+        return session_id in AntigravityCLI._session_holders
+
+    def has_active_sessions(self) -> bool:
+        return bool(AntigravityCLI._session_holders)
+
+    def get_transcript_path(self, session_id: str) -> Path:
+        home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+        base = Path(home) if home else Path.home()
+        return base / ".gemini" / "antigravity-cli" / "brain" / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+
+    def parse_log_delta(
+        self,
+        session_id: str,
+        transcript_path: Path,
+        prev_size: int | None,
+    ) -> tuple[int, str | None]:
+        try:
+            file_size = transcript_path.stat().st_size
+        except OSError:
+            return prev_size or 0, None
+
+        sync_in_progress = AntigravityCLI._sync_in_progress.get(session_id, False)
+        sync_processed_size = AntigravityCLI._processed_log_sizes.get(str(transcript_path), 0)
+
+        if prev_size is None:
+            # Initialize count to current size or sync processed size, whichever is larger,
+            # so we only check new lines added during this run
+            return max(file_size, sync_processed_size), None
+
+        if sync_processed_size > prev_size:
+            prev_size = sync_processed_size
+
+        if file_size < prev_size:
+            # File was truncated or reset
+            prev_size = 0
+
+        if file_size <= prev_size:
+            return prev_size, None
+
+        try:
+            with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(prev_size)
+                new_content = f.read()
+        except OSError:
+            return prev_size, None
+
+        entries = []
+        for line in new_content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                if isinstance(entry, dict):
+                    entries.append(entry)
+            except json.JSONDecodeError:
+                continue
+
+        if not entries:
+            return file_size, None
+
+        thinking_blocks = []
+        tool_calls = []
+        tool_completions = []
+        final_content = None
+
+        for entry in entries:
+            source = entry.get("source")
+            etype = entry.get("type")
+            status = entry.get("status")
+
+            if source == "MODEL":
+                if etype == "PLANNER_RESPONSE":
+                    thinking = entry.get("thinking")
+                    if thinking and isinstance(thinking, str) and thinking.strip():
+                        thinking_blocks.append(thinking.strip())
+
+                    tcalls = entry.get("tool_calls")
+                    if tcalls and isinstance(tcalls, list):
+                        for tc in tcalls:
+                            name = tc.get("name", "unknown")
+                            args = tc.get("args", {})
+                            args_str = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in args.items())
+                            tool_calls.append(f"`{name}({args_str})`")
+
+                    if status == "DONE" and not tcalls:
+                        content = entry.get("content")
+                        if content and isinstance(content, str) and content.strip():
+                            if not sync_in_progress:
+                                final_content = content.strip()
+
+                elif etype in ("RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "GREP_SEARCH", "GENERIC", "CODE_ACTION") and status == "DONE":
+                    friendly_names = {
+                        "RUN_COMMAND": "run_command (명령어 실행)",
+                        "VIEW_FILE": "view_file (파일 보기)",
+                        "LIST_DIRECTORY": "list_dir (디렉토리 조회)",
+                        "GREP_SEARCH": "grep_search (패턴 검색)",
+                        "CODE_ACTION": "replace_file_content (파일 수정)",
+                    }
+                    name = friendly_names.get(etype, etype.lower())
+                    tool_completions.append(f"`{name}` 완료")
+
+        parts = []
+        if thinking_blocks:
+            combined_thinking = "\n\n".join(thinking_blocks)
+            blockquote_thinking = "\n".join(f"> {l}" for l in combined_thinking.splitlines())
+            parts.append(f"💭 **생각 흐름:**\n{blockquote_thinking}")
+        if tool_calls:
+            calls_list = "\n".join(f"• {tc}" for tc in tool_calls)
+            parts.append(f"🛠️ **도구 호출:**\n{calls_list}")
+        if tool_completions:
+            completions_list = "\n".join(f"• {tc}" for tc in tool_completions)
+            parts.append(f"📥 **도구 완료:**\n{completions_list}")
+        if final_content:
+            parts.append(f"✅ **최종 답변:**\n{final_content}")
+
+        formatted_text = None
+        if parts:
+            header = "**[우덕터 백그라운드 완료 알림]**" if final_content else "**[우덕터 백그라운드 진행 상황]**"
+            formatted_text = f"{header}\n\n" + "\n\n".join(parts)
+
+        return file_size, formatted_text

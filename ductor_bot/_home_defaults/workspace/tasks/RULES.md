@@ -1,11 +1,17 @@
-# Background Tasks Directory (DEPRECATED)
+# Background Tasks Directory
 
-> [!WARNING]
-> This directory and its associated Ductor-level task tools are **DEPRECATED** on this custom branch.
+This directory contains folders for active and completed background tasks.
+Each subfolder holds a task's metadata (TASKMEMORY.md, rule files).
 
-Do not use `create_task.py`, `cancel_task.py`, or `resume_task.py`. 
+**Do not manually edit or create task folders here.**
 
-Instead:
-* Run long-running terminal commands asynchronously using the native `run_command` (by setting a short `WaitMsBeforeAsync` time and ending your turn).
-* Spawn collaborative agents using the native `define_subagent` and `invoke_subagent` tools.
-* The system's warm PTY session and active Log Watcher daemon will handle all background progress monitoring and Telegram updates automatically.
+## Managing tasks
+
+Use the tools in `tools/task_tools/`:
+
+- **Create**: `python3 tools/task_tools/create_task.py --name "..." "prompt"`
+- **List**: `python3 tools/task_tools/list_tasks.py`
+- **Cancel**: `python3 tools/task_tools/cancel_task.py TASK_ID`
+- **Resume**: `python3 tools/task_tools/resume_task.py TASK_ID "follow-up"`
+
+See `tools/task_tools/CLAUDE/GEMINI/AGENTS.md` for full documentation.

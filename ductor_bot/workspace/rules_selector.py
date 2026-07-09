@@ -43,6 +43,7 @@ class RulesSelector:
         claude_result = auth.get("claude")
         codex_result = auth.get("codex")
         gemini_result = auth.get("gemini")
+        antigravity_result = auth.get("antigravity")
 
         self._claude_authenticated = (
             claude_result.status == AuthStatus.AUTHENTICATED if claude_result else False
@@ -53,6 +54,9 @@ class RulesSelector:
         self._gemini_authenticated = (
             gemini_result.status == AuthStatus.AUTHENTICATED if gemini_result else False
         )
+        self._antigravity_authenticated = (
+            antigravity_result.status == AuthStatus.AUTHENTICATED if antigravity_result else False
+        )
 
     @property
     def _authenticated_count(self) -> int:
@@ -62,6 +66,7 @@ class RulesSelector:
                 self._claude_authenticated,
                 self._codex_authenticated,
                 self._gemini_authenticated,
+                self._antigravity_authenticated,
             )
         )
 
@@ -79,7 +84,7 @@ class RulesSelector:
             return "all-clis"
         if self._codex_authenticated:
             return "codex-only"
-        if self._gemini_authenticated:
+        if self._gemini_authenticated or self._antigravity_authenticated:
             return "gemini-only"
         return "claude-only"
 
@@ -179,15 +184,15 @@ class RulesSelector:
                     deployed_count += 1
                     logger.debug("Deployed: %s -> CLAUDE.md", template.name)
 
-                # Deploy AGENTS.md if Codex is authenticated
-                if self._codex_authenticated:
+                # Deploy AGENTS.md if Codex or Antigravity is authenticated
+                if self._codex_authenticated or self._antigravity_authenticated:
                     agents_dst = dst_dir / "AGENTS.md"
                     shutil.copy2(template, agents_dst)
                     deployed_count += 1
                     logger.debug("Deployed: %s -> AGENTS.md", template.name)
 
-                # Deploy GEMINI.md if Gemini is authenticated
-                if self._gemini_authenticated:
+                # Deploy GEMINI.md if Gemini or Antigravity is authenticated
+                if self._gemini_authenticated or self._antigravity_authenticated:
                     gemini_dst = dst_dir / "GEMINI.md"
                     shutil.copy2(template, gemini_dst)
                     deployed_count += 1
@@ -197,11 +202,12 @@ class RulesSelector:
                 logger.exception("Failed to deploy %s", template)
 
         logger.info(
-            "Deployed %d rule files (Claude=%s, Codex=%s, Gemini=%s)",
+            "Deployed %d rule files (Claude=%s, Codex=%s, Gemini=%s, Antigravity=%s)",
             deployed_count,
             self._claude_authenticated,
             self._codex_authenticated,
             self._gemini_authenticated,
+            self._antigravity_authenticated,
         )
 
         # Cleanup: Remove stale files that don't match current auth status
@@ -216,9 +222,9 @@ class RulesSelector:
         stale: list[tuple[str, str]] = []
         if not self._claude_authenticated:
             stale.append(("CLAUDE.md", "Claude"))
-        if not self._codex_authenticated:
+        if not self._codex_authenticated and not self._antigravity_authenticated:
             stale.append(("AGENTS.md", "Codex"))
-        if not self._gemini_authenticated:
+        if not self._gemini_authenticated and not self._antigravity_authenticated:
             stale.append(("GEMINI.md", "Gemini"))
 
         for filename, provider_name in stale:

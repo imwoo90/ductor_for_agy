@@ -1644,11 +1644,10 @@ class TelegramBot:
 
     async def _run_log_monitor_loop(self) -> None:
         """Periodically scans active conversation logs and pushes new MODEL responses to Telegram."""
-        import os
-        import json
         from pathlib import Path
         from ductor_bot.messenger.telegram.sender import send_rich, SendRichOpts
-        from ductor_bot.cli.antigravity_provider import AntigravityCLI
+        from ductor_bot.cli.base import CLIConfig
+        from ductor_bot.cli.factory import create_cli
         
         last_sizes: dict[str, int] = {}
         logger.info("Log monitor loop started")
@@ -1659,140 +1658,48 @@ class TelegramBot:
                 if self._orchestrator is None:
                     continue
                     
-                active_ids = set(AntigravityCLI._session_holders.keys())
-                if not active_ids:
-                    continue
-                    
                 sessions = await self._orch._sessions.list_all()
                 for session in sessions:
                     chat_id = session.chat_id
                     topic_id = session.topic_id  # thread_id for Telegram
                     
-                    antigravity_data = session.provider_sessions.get("antigravity")
-                    if not antigravity_data or not antigravity_data.session_id:
+                    provider_name = session.provider
+                    provider_data = session.provider_sessions.get(provider_name)
+                    if not provider_data or not provider_data.session_id:
                         continue
                         
-                    session_id = antigravity_data.session_id
-                    if session_id not in active_ids:
-                        continue
-                        
-                    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
-                    base = Path(home) if home else Path.home()
-                    transcript_path = base / ".gemini" / "antigravity-cli" / "brain" / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+                    session_id = provider_data.session_id
                     
+                    # Resolve CLI instance for the provider name
+                    cli_config = CLIConfig(
+                        provider=provider_name,
+                        working_dir=self._orch.config.working_dir,
+                    )
+                    cli_instance = create_cli(cli_config)
+                    parser = cli_instance.get_log_parser()
+                    if parser is None:
+                        continue
+                        
+                    if not parser.is_session_active(session_id):
+                        continue
+                        
+                    transcript_path = parser.get_transcript_path(session_id)
                     if not transcript_path.is_file():
                         continue
                         
-                    try:
-                        file_size = transcript_path.stat().st_size
-                    except OSError:
-                        continue
-                        
-                    sync_in_progress = AntigravityCLI._sync_in_progress.get(session_id, False)
-
-                        
                     prev_size = last_sizes.get(str(transcript_path))
-                    sync_processed_size = AntigravityCLI._processed_log_sizes.get(str(transcript_path), 0)
-                    if prev_size is None:
-                        # Initialize count to current size or sync processed size, whichever is larger, so we only check new lines added during this run
-                        last_sizes[str(transcript_path)] = max(file_size, sync_processed_size)
-                        continue
+                    new_size, formatted_text = parser.parse_log_delta(session_id, transcript_path, prev_size)
+                    
+                    if new_size is not None:
+                        last_sizes[str(transcript_path)] = new_size
                         
-                    if sync_processed_size > prev_size:
-                        prev_size = sync_processed_size
-                        last_sizes[str(transcript_path)] = prev_size
-                        
-                    if file_size < prev_size:
-                        # File was truncated or reset
-                        prev_size = 0
-                        
-                    if file_size > prev_size:
-                        try:
-                            with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-                                f.seek(prev_size)
-                                new_content = f.read()
-                        except OSError:
-                            continue
-                            
-                        last_sizes[str(transcript_path)] = file_size
-                        
-                        entries = []
-                        for line in new_content.splitlines():
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                entry = json.loads(line)
-                                if isinstance(entry, dict):
-                                    entries.append(entry)
-                            except json.JSONDecodeError:
-                                continue
-                        
-                        if entries:
-                            thinking_blocks = []
-                            tool_calls = []
-                            tool_completions = []
-                            final_content = None
-
-                            for entry in entries:
-                                source = entry.get("source")
-                                etype = entry.get("type")
-                                status = entry.get("status")
-                                
-                                if source == "MODEL":
-                                    if etype == "PLANNER_RESPONSE":
-                                        thinking = entry.get("thinking")
-                                        if thinking and isinstance(thinking, str) and thinking.strip():
-                                            thinking_blocks.append(thinking.strip())
-                                        
-                                        tcalls = entry.get("tool_calls")
-                                        if tcalls and isinstance(tcalls, list):
-                                            for tc in tcalls:
-                                                name = tc.get("name", "unknown")
-                                                args = tc.get("args", {})
-                                                args_str = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in args.items())
-                                                tool_calls.append(f"`{name}({args_str})`")
-                                        
-                                        if status == "DONE" and not tcalls:
-                                            content = entry.get("content")
-                                            if content and isinstance(content, str) and content.strip():
-                                                if not sync_in_progress:
-                                                    final_content = content.strip()
-                                    
-                                    elif etype in ("RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "GREP_SEARCH", "GENERIC", "CODE_ACTION") and status == "DONE":
-                                        friendly_names = {
-                                            "RUN_COMMAND": "run_command (명령어 실행)",
-                                            "VIEW_FILE": "view_file (파일 보기)",
-                                            "LIST_DIRECTORY": "list_dir (디렉토리 조회)",
-                                            "GREP_SEARCH": "grep_search (패턴 검색)",
-                                            "CODE_ACTION": "replace_file_content (파일 수정)",
-                                        }
-                                        name = friendly_names.get(etype, etype.lower())
-                                        tool_completions.append(f"`{name}` 완료")
-
-                            parts = []
-                            if thinking_blocks:
-                                combined_thinking = "\n\n".join(thinking_blocks)
-                                blockquote_thinking = "\n".join(f"> {l}" for l in combined_thinking.splitlines())
-                                parts.append(f"💭 **생각 흐름:**\n{blockquote_thinking}")
-                            if tool_calls:
-                                calls_list = "\n".join(f"• {tc}" for tc in tool_calls)
-                                parts.append(f"🛠️ **도구 호출:**\n{calls_list}")
-                            if tool_completions:
-                                completions_list = "\n".join(f"• {tc}" for tc in tool_completions)
-                                parts.append(f"📥 **도구 완료:**\n{completions_list}")
-                            if final_content:
-                                parts.append(f"✅ **최종 답변:**\n{final_content}")
-
-                            if parts:
-                                header = "**[우덕터 백그라운드 완료 알림]**" if final_content else "**[우덕터 백그라운드 진행 상황]**"
-                                formatted_text = f"{header}\n\n" + "\n\n".join(parts)
-                                logger.info("LogWatcher: Forwarding progress/response to chat %s topic %s", chat_id, topic_id)
-                                opts = SendRichOpts(
-                                    allowed_roots=self.file_roots(self._orch.paths),
-                                    thread_id=topic_id,
-                                )
-                                await send_rich(self._bot, chat_id, formatted_text, opts)
+                    if formatted_text:
+                        logger.info("LogWatcher: Forwarding progress/response to chat %s topic %s", chat_id, topic_id)
+                        opts = SendRichOpts(
+                            allowed_roots=self.file_roots(self._orch.paths),
+                            thread_id=topic_id,
+                        )
+                        await send_rich(self._bot, chat_id, formatted_text, opts)
                                     
             except asyncio.CancelledError:
                 break
