@@ -239,6 +239,18 @@ class AntigravityCLI(BaseCLI):
             if self.__class__._monitor_task is None or self.__class__._monitor_task.done():
                 self.__class__._monitor_task = loop.create_task(self.__class__._run_monitor_loop())
                 logger.info("Antigravity background log monitor task started")
+
+            # Register signal handlers for clean shutdown when loop exits/terminates
+            import signal
+            def handle_signal():
+                logger.info("Antigravity received shutdown signal, performing clean shutdown")
+                AntigravityCLI.shutdown_class()
+
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                try:
+                    loop.add_signal_handler(sig, handle_signal)
+                except ValueError:
+                    pass
         except RuntimeError:
             logger.debug("No running event loop, skipping background log monitor task creation")
 
