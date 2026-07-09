@@ -277,3 +277,8 @@ class BaseCLI(ABC):
     def get_log_parser(self) -> LogParser | None:
         """Return a log parser if background log monitoring is supported, else None."""
         return None
+
+    @classmethod
+    def shutdown_class(cls) -> None:
+        """Hook called on daemon shutdown to release provider-wide class resources."""
+        pass

@@ -467,7 +467,7 @@ class TelegramBot:
             reject_key = "telegram.channel_not_whitelisted"
             chat_kind = "channel"
         else:
-            allowed = chat.id in self._allowed_groups or "InMyung" in (chat.title or "")
+            allowed = chat.id in self._allowed_groups
             reject_key = "telegram.group_rejected"
             chat_kind = "group"
         if self._chat_tracker:

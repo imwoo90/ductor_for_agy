@@ -119,6 +119,33 @@ class AntigravityCLI(BaseCLI):
     _sync_in_progress: dict[str, bool] = {}
     _shutting_down = False
 
+    @classmethod
+    def shutdown_class(cls) -> None:
+        """Kills active Antigravity session holder(s) on shutdown."""
+        import os
+        import signal
+        cls._shutting_down = True
+        holders = list(cls._session_holders.items())
+        if holders:
+            logger.info("Shutdown killing %d active Antigravity session holder(s)", len(holders))
+            for session_id, holder in holders:
+                holder.reader_task.cancel()
+                try:
+                    if holder.proc.poll() is None:
+                        pgid = os.getpgid(holder.proc.pid)
+                        if pgid != os.getpgrp():
+                            os.killpg(pgid, signal.SIGKILL)
+                        else:
+                            holder.proc.kill()
+                        holder.proc.wait(timeout=1.0)
+                except Exception as e:
+                    logger.debug("Error killing process group for session %s: %s", session_id, e)
+                try:
+                    os.close(holder.master_fd)
+                except OSError:
+                    pass
+            cls._session_holders.clear()
+
     def __init__(self, config: CLIConfig) -> None:
         self._config = config
         self._working_dir = Path(config.working_dir).resolve()

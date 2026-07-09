@@ -190,32 +190,17 @@ async def ensure_docker(orch: Orchestrator) -> None:
 async def shutdown(orch: Orchestrator) -> None:
     """Cleanup on bot shutdown."""
     try:
-        from ductor_bot.cli.antigravity_provider import AntigravityCLI
-        AntigravityCLI._shutting_down = True
-        import os
-        import signal
-        holders = list(AntigravityCLI._session_holders.items())
-        if holders:
-            logger.info("Shutdown killing %d active Antigravity session holder(s)", len(holders))
-            for session_id, holder in holders:
-                holder.reader_task.cancel()
-                try:
-                    if holder.proc.poll() is None:
-                        pgid = os.getpgid(holder.proc.pid)
-                        if pgid != os.getpgrp():
-                            os.killpg(pgid, signal.SIGKILL)
-                        else:
-                            holder.proc.kill()
-                        holder.proc.wait(timeout=1.0)
-                except Exception as e:
-                    logger.debug("Error killing process group for session %s: %s", session_id, e)
-                try:
-                    os.close(holder.master_fd)
-                except OSError:
-                    pass
-            AntigravityCLI._session_holders.clear()
+        from ductor_bot.cli.base import BaseCLI
+        # Only subclasses that were imported/loaded will be in __subclasses__().
+        # Since only loaded classes could have spawned background resources,
+        # cleaning up subclasses in __subclasses__() is both necessary and sufficient.
+        for cls in BaseCLI.__subclasses__():
+            try:
+                cls.shutdown_class()
+            except Exception as e:
+                logger.warning("Error during CLI provider class shutdown for %s: %s", cls.__name__, e)
     except Exception as e:
-        logger.warning("Error during Antigravity session holder cleanup on shutdown: %s", e)
+        logger.warning("Error during CLI providers cleanup on shutdown: %s", e)
 
     killed = await orch._process_registry.kill_all_active()
     if killed:
