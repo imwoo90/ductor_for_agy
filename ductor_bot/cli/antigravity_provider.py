@@ -913,32 +913,32 @@ class AntigravityLogParser(LogParser):
 
                 elif etype in ("RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "GREP_SEARCH", "GENERIC", "CODE_ACTION") and status == "DONE":
                     friendly_names = {
-                        "RUN_COMMAND": "run_command (명령어 실행)",
-                        "VIEW_FILE": "view_file (파일 보기)",
-                        "LIST_DIRECTORY": "list_dir (디렉토리 조회)",
-                        "GREP_SEARCH": "grep_search (패턴 검색)",
-                        "CODE_ACTION": "replace_file_content (파일 수정)",
+                        "RUN_COMMAND": "run_command (execute)",
+                        "VIEW_FILE": "view_file (read)",
+                        "LIST_DIRECTORY": "list_dir (list)",
+                        "GREP_SEARCH": "grep_search (search)",
+                        "CODE_ACTION": "replace_file_content (edit)",
                     }
                     name = friendly_names.get(etype, etype.lower())
-                    tool_completions.append(f"`{name}` 완료")
+                    tool_completions.append(f"`{name}` completed")
 
         parts = []
         if thinking_blocks:
             combined_thinking = "\n\n".join(thinking_blocks)
             blockquote_thinking = "\n".join(f"> {l}" for l in combined_thinking.splitlines())
-            parts.append(f"💭 **생각 흐름:**\n{blockquote_thinking}")
+            parts.append(f"💭 **Thinking Process:**\n{blockquote_thinking}")
         if tool_calls:
             calls_list = "\n".join(f"• {tc}" for tc in tool_calls)
-            parts.append(f"🛠️ **도구 호출:**\n{calls_list}")
+            parts.append(f"🛠️ **Tool Calls:**\n{calls_list}")
         if tool_completions:
             completions_list = "\n".join(f"• {tc}" for tc in tool_completions)
-            parts.append(f"📥 **도구 완료:**\n{completions_list}")
+            parts.append(f"📥 **Tool Completions:**\n{completions_list}")
         if final_content:
-            parts.append(f"✅ **최종 답변:**\n{final_content}")
+            parts.append(f"✅ **Final Response:**\n{final_content}")
 
         formatted_text = None
         if parts:
-            header = "**[우덕터 백그라운드 완료 알림]**" if final_content else "**[우덕터 백그라운드 진행 상황]**"
+            header = "**[Ductor Background Completed]**" if final_content else "**[Ductor Background Progress]**"
             formatted_text = f"{header}\n\n" + "\n\n".join(parts)
 
         return file_size, formatted_text
