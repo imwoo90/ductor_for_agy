@@ -5,7 +5,7 @@ from pathlib import Path
 from ductor_bot.bus.bus import MessageBus
 from ductor_bot.bus.envelope import Envelope, Origin, LockMode
 from ductor_bot.cli.factory import create_cli
-from ductor_bot.cli.base import CLIConfig
+from ductor_bot.cli.base import BaseCLI, CLIConfig
 from ductor_bot.workspace.paths import DuctorPaths
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ class LogMonitorObserver:
         self._bus: MessageBus | None = None
         self._task: asyncio.Task[None] | None = None
         self._last_sizes: dict[str, int] = {}
+        self._cli_cache: dict[str, BaseCLI] = {}
 
     def wire_to_bus(self, bus: MessageBus) -> None:
         self._bus = bus
@@ -58,12 +59,16 @@ class LogMonitorObserver:
 
                     session_id = provider_data.session_id
 
-                    # Resolve CLI instance for the provider name
-                    cli_config = CLIConfig(
-                        provider=provider_name,
-                        working_dir=self._orchestrator.config.working_dir,
-                    )
-                    cli_instance = create_cli(cli_config)
+                    # Get or create CLI instance from cache to avoid redundant allocations and logs
+                    cli_instance = self._cli_cache.get(provider_name)
+                    if cli_instance is None:
+                        cli_config = CLIConfig(
+                            provider=provider_name,
+                            working_dir=self._orchestrator.config.working_dir,
+                        )
+                        cli_instance = create_cli(cli_config)
+                        self._cli_cache[provider_name] = cli_instance
+
                     parser = cli_instance.get_log_parser()
                     if parser is None:
                         continue
