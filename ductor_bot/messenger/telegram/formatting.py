@@ -60,22 +60,31 @@ def _format_table(lines: list[str]) -> str:
 
 
 def _convert_blockquotes(text: str) -> str:
-    """Wrap consecutive ``> `` lines in ``<blockquote>`` tags."""
+    """Wrap consecutive ``> `` or ``>! `` lines in ``<blockquote>`` or ``<blockquote expandable>`` tags."""
     lines = text.split("\n")
     result: list[str] = []
     quote_buf: list[str] = []
     escaped_gt = "&gt; "
+    escaped_gt_exp = "&gt;! "
+    is_expandable = False
 
     for line in lines:
-        if line.startswith(escaped_gt):
-            quote_buf.append(line[len(escaped_gt) :])
+        if line.startswith(escaped_gt) or line.startswith(escaped_gt_exp):
+            if line.startswith(escaped_gt_exp):
+                is_expandable = True
+                quote_buf.append(line[len(escaped_gt_exp) :])
+            else:
+                quote_buf.append(line[len(escaped_gt) :])
         else:
             if quote_buf:
-                result.append("<blockquote>" + "\n".join(quote_buf) + "</blockquote>")
+                tag = "<blockquote expandable>" if is_expandable else "<blockquote>"
+                result.append(tag + "\n".join(quote_buf) + "</blockquote>")
                 quote_buf = []
+                is_expandable = False
             result.append(line)
     if quote_buf:
-        result.append("<blockquote>" + "\n".join(quote_buf) + "</blockquote>")
+        tag = "<blockquote expandable>" if is_expandable else "<blockquote>"
+        result.append(tag + "\n".join(quote_buf) + "</blockquote>")
     return "\n".join(result)
 
 
@@ -140,6 +149,7 @@ def markdown_to_telegram_html(text: str) -> str:
     text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", text)
     text = re.sub(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)", r"<i>\1</i>", text)
     text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
+    text = re.sub(r"\|\|(.+?)\|\|", r"<tg-spoiler>\1</tg-spoiler>", text)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
     text = _convert_blockquotes(text)
     text = re.sub(r"^[-*]{3,}$", "\u2014\u2014\u2014", text, flags=re.MULTILINE)

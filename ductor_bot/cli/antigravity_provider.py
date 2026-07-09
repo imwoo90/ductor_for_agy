@@ -235,7 +235,7 @@ class AntigravityCLI(BaseCLI):
                             topic_id,
                         )
                         envelope = Envelope(
-                            origin=Origin.BACKGROUND,
+                            origin=Origin.HEARTBEAT,
                             chat_id=chat_id,
                             topic_id=topic_id,
                             transport=transport,
@@ -957,7 +957,7 @@ class AntigravityLogParser(LogParser):
         parts = []
         if thinking_blocks:
             combined_thinking = "\n\n".join(thinking_blocks)
-            blockquote_thinking = "\n".join(f"> {l}" for l in combined_thinking.splitlines())
+            blockquote_thinking = "\n".join(f">! {l}" for l in combined_thinking.splitlines())
             parts.append(f"💭 **Thinking Process:**\n{blockquote_thinking}")
         if tool_calls:
             calls_list = "\n".join(f"• {tc}" for tc in tool_calls)
