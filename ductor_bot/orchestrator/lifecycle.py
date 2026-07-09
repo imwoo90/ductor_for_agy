@@ -103,7 +103,6 @@ async def create_orchestrator(
         webhook_manager=orch._webhook_manager,
         cli_service=orch._cli_service,
         codex_cache=codex_cache,
-        orchestrator=orch,
     )
     orch._providers._codex_cache_fn = lambda: orch._observers.codex_cache
     await orch._observers.start_all(docker_container=docker_container)
@@ -190,19 +189,6 @@ async def ensure_docker(orch: Orchestrator) -> None:
 
 async def shutdown(orch: Orchestrator) -> None:
     """Cleanup on bot shutdown."""
-    try:
-        from ductor_bot.cli.base import BaseCLI
-        # Only subclasses that were imported/loaded will be in __subclasses__().
-        # Since only loaded classes could have spawned background resources,
-        # cleaning up subclasses in __subclasses__() is both necessary and sufficient.
-        for cls in BaseCLI.__subclasses__():
-            try:
-                cls.shutdown_class()
-            except Exception as e:
-                logger.warning("Error during CLI provider class shutdown for %s: %s", cls.__name__, e)
-    except Exception as e:
-        logger.warning("Error during CLI providers cleanup on shutdown: %s", e)
-
     killed = await orch._process_registry.kill_all_active()
     if killed:
         logger.info("Shutdown terminated %d active CLI process(es)", killed)

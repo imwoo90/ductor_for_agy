@@ -118,6 +118,7 @@ class AntigravityCLI(BaseCLI):
     _processed_log_sizes: dict[str, int] = {}
     _sync_in_progress: dict[str, bool] = {}
     _shutting_down = False
+    _monitor_task: asyncio.Task[None] | None = None
 
     @classmethod
     def shutdown_class(cls) -> None:
@@ -125,6 +126,9 @@ class AntigravityCLI(BaseCLI):
         import os
         import signal
         cls._shutting_down = True
+        if cls._monitor_task:
+            cls._monitor_task.cancel()
+            cls._monitor_task = None
         holders = list(cls._session_holders.items())
         if holders:
             logger.info("Shutdown killing %d active Antigravity session holder(s)", len(holders))
@@ -146,12 +150,97 @@ class AntigravityCLI(BaseCLI):
                     pass
             cls._session_holders.clear()
 
+    @classmethod
+    async def _run_monitor_loop(cls) -> None:
+        import gc
+        from ductor_bot.orchestrator.core import Orchestrator
+        from ductor_bot.bus.bus import MessageBus
+        from ductor_bot.bus.envelope import Envelope, Origin
+
+        logger.info("Antigravity background log monitor loop started")
+
+        while not cls._shutting_down:
+            try:
+                await asyncio.sleep(5.0)
+
+                orch = None
+                bus = None
+                for obj in gc.get_objects():
+                    if orch is None and isinstance(obj, Orchestrator):
+                        orch = obj
+                    if bus is None and isinstance(obj, MessageBus):
+                        bus = obj
+                    if orch is not None and bus is not None:
+                        break
+
+                if orch is None or bus is None:
+                    continue
+
+                sessions = await orch._sessions.list_all()
+                for session in sessions:
+                    chat_id = session.chat_id
+                    topic_id = session.topic_id
+                    transport = getattr(session, "transport", "tg")
+
+                    provider_name = session.provider
+                    if provider_name != "antigravity":
+                        continue
+
+                    provider_data = session.provider_sessions.get(provider_name)
+                    if not provider_data or not provider_data.session_id:
+                        continue
+
+                    session_id = provider_data.session_id
+
+                    parser = AntigravityLogParser()
+                    if not parser.is_session_active(session_id):
+                        continue
+
+                    transcript_path = parser.get_transcript_path(session_id)
+                    if not transcript_path.is_file():
+                        continue
+
+                    prev_size = cls._processed_log_sizes.get(str(transcript_path))
+                    new_size, formatted_text = parser.parse_log_delta(
+                        session_id, transcript_path, prev_size
+                    )
+
+                    if new_size is not None:
+                        cls._processed_log_sizes[str(transcript_path)] = new_size
+
+                    if formatted_text:
+                        logger.info(
+                            "Antigravity Log Monitor: Submitting log delta to bus for chat %s topic %s",
+                            chat_id,
+                            topic_id,
+                        )
+                        envelope = Envelope(
+                            origin=Origin.BACKGROUND,
+                            chat_id=chat_id,
+                            topic_id=topic_id,
+                            transport=transport,
+                            result_text=formatted_text,
+                        )
+                        await bus.submit(envelope)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in Antigravity log monitor loop: %s", e)
+
     def __init__(self, config: CLIConfig) -> None:
         self._config = config
         self._working_dir = Path(config.working_dir).resolve()
         self._cli = "agy"
         self._agy_workspace_cache: Path | None = None
         logger.info("AntigravityCLI: cwd=%s model=%s", self._working_dir, config.model)
+
+        try:
+            loop = asyncio.get_running_loop()
+            if self.__class__._monitor_task is None or self.__class__._monitor_task.done():
+                self.__class__._monitor_task = loop.create_task(self.__class__._run_monitor_loop())
+                logger.info("Antigravity background log monitor task started")
+        except RuntimeError:
+            logger.debug("No running event loop, skipping background log monitor task creation")
 
     @classmethod
     def _cleanup_expired_holders(cls) -> None:
@@ -853,3 +942,29 @@ class AntigravityLogParser(LogParser):
             formatted_text = f"{header}\n\n" + "\n\n".join(parts)
 
         return file_size, formatted_text
+
+
+def _cleanup_on_exit():
+    import os
+    import signal
+    holders = list(AntigravityCLI._session_holders.items())
+    if holders:
+        for session_id, holder in holders:
+            try:
+                if holder.proc.poll() is None:
+                    pgid = os.getpgid(holder.proc.pid)
+                    if pgid != os.getpgrp():
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        holder.proc.kill()
+                    holder.proc.wait(timeout=1.0)
+            except Exception:
+                pass
+            try:
+                os.close(holder.master_fd)
+            except OSError:
+                pass
+        AntigravityCLI._session_holders.clear()
+
+import atexit
+atexit.register(_cleanup_on_exit)

@@ -22,7 +22,6 @@ from ductor_bot.cli.antigravity_cache_observer import AntigravityCacheObserver
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.codex_cache_observer import CodexCacheObserver
 from ductor_bot.cli.gemini_cache_observer import GeminiCacheObserver
-from ductor_bot.cli.log_monitor_observer import LogMonitorObserver
 from ductor_bot.cli.service import CLIService
 from ductor_bot.config import AgentConfig, get_antigravity_models, get_gemini_models
 from ductor_bot.config_reload import ConfigReloader
@@ -55,7 +54,6 @@ class ObserverManager:
         self.codex_cache_obs: CodexCacheObserver | None = None
         self.gemini_cache_obs: GeminiCacheObserver | None = None
         self.antigravity_cache_obs: AntigravityCacheObserver | None = None
-        self.log_monitor: LogMonitorObserver | None = None
 
         self._config_reloader: ConfigReloader | None = None
         self._rule_sync_task: asyncio.Task[None] | None = None
@@ -111,7 +109,6 @@ class ObserverManager:
         webhook_manager: WebhookManager,
         cli_service: CLIService,
         codex_cache: CodexModelCache,
-        orchestrator,
     ) -> None:
         """Create Background, Cron, and Webhook observers (after caches are ready)."""
         config, paths = self._config, self._paths
@@ -123,10 +120,6 @@ class ObserverManager:
         self.webhook = WebhookObserver(
             paths, webhook_manager, config=config, codex_cache=codex_cache
         )
-        if config.provider == "antigravity":
-            self.log_monitor = LogMonitorObserver(paths, orchestrator)
-        else:
-            self.log_monitor = None
 
     # -- Start / stop ---------------------------------------------------------
 
@@ -138,8 +131,6 @@ class ObserverManager:
         if self.webhook:
             await self.webhook.start()
         await self.cleanup.start()
-        if self.log_monitor:
-            self.log_monitor.start()
 
         self._rule_sync_task = asyncio.create_task(watch_rule_files(self._paths.workspace))
         logger.info("Rule file watcher started (CLAUDE.md <-> AGENTS.md <-> GEMINI.md)")
@@ -185,8 +176,6 @@ class ObserverManager:
         if self.antigravity_cache_obs:
             await self.antigravity_cache_obs.stop()
             self.antigravity_cache_obs = None
-        if self.log_monitor:
-            await self.log_monitor.stop()
         for task in (self._rule_sync_task, self._skill_sync_task):
             if task and not task.done():
                 task.cancel()
@@ -256,6 +245,3 @@ class ObserverManager:
             self.webhook.set_result_handler(_on_webhook)
             if wake_handler:
                 self.webhook.set_wake_handler(wake_handler)
-
-        if self.log_monitor:
-            self.log_monitor.wire_to_bus(bus)
