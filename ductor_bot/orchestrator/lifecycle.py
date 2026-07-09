@@ -103,6 +103,7 @@ async def create_orchestrator(
         webhook_manager=orch._webhook_manager,
         cli_service=orch._cli_service,
         codex_cache=codex_cache,
+        orchestrator=orch,
     )
     orch._providers._codex_cache_fn = lambda: orch._observers.codex_cache
     await orch._observers.start_all(docker_container=docker_container)

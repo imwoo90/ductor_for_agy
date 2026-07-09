@@ -203,7 +203,6 @@ class TelegramBot:
         self._update_observer: UpdateObserver | None = None
         self._upgrade_lock = asyncio.Lock()
         self._group_audit_task: asyncio.Task[None] | None = None
-        self._log_monitor_task: asyncio.Task[None] | None = None
 
         allowed = set(config.allowed_user_ids)
         allowed_groups = set(config.allowed_group_ids)
@@ -1642,74 +1641,9 @@ class TelegramBot:
         )
         return self._exit_code
 
-    async def _run_log_monitor_loop(self) -> None:
-        """Periodically scans active conversation logs and pushes new MODEL responses to Telegram."""
-        from pathlib import Path
-        from ductor_bot.messenger.telegram.sender import send_rich, SendRichOpts
-        from ductor_bot.cli.base import CLIConfig
-        from ductor_bot.cli.factory import create_cli
-        
-        last_sizes: dict[str, int] = {}
-        logger.info("Log monitor loop started")
-        
-        while True:
-            try:
-                await asyncio.sleep(5.0)
-                if self._orchestrator is None:
-                    continue
-                    
-                sessions = await self._orch._sessions.list_all()
-                for session in sessions:
-                    chat_id = session.chat_id
-                    topic_id = session.topic_id  # thread_id for Telegram
-                    
-                    provider_name = session.provider
-                    provider_data = session.provider_sessions.get(provider_name)
-                    if not provider_data or not provider_data.session_id:
-                        continue
-                        
-                    session_id = provider_data.session_id
-                    
-                    # Resolve CLI instance for the provider name
-                    cli_config = CLIConfig(
-                        provider=provider_name,
-                        working_dir=self._orch.config.working_dir,
-                    )
-                    cli_instance = create_cli(cli_config)
-                    parser = cli_instance.get_log_parser()
-                    if parser is None:
-                        continue
-                        
-                    if not parser.is_session_active(session_id):
-                        continue
-                        
-                    transcript_path = parser.get_transcript_path(session_id)
-                    if not transcript_path.is_file():
-                        continue
-                        
-                    prev_size = last_sizes.get(str(transcript_path))
-                    new_size, formatted_text = parser.parse_log_delta(session_id, transcript_path, prev_size)
-                    
-                    if new_size is not None:
-                        last_sizes[str(transcript_path)] = new_size
-                        
-                    if formatted_text:
-                        logger.info("LogWatcher: Forwarding progress/response to chat %s topic %s", chat_id, topic_id)
-                        opts = SendRichOpts(
-                            allowed_roots=self.file_roots(self._orch.paths),
-                            thread_id=topic_id,
-                        )
-                        await send_rich(self._bot, chat_id, formatted_text, opts)
-                                    
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("Error in log monitor loop: %s", e)
-
     async def shutdown(self) -> None:
         await _cancel_task(self._restart_watcher)
         await _cancel_task(self._group_audit_task)
-        await _cancel_task(self._log_monitor_task)
         if self._update_observer:
             await self._update_observer.stop()
         if self._orchestrator:
