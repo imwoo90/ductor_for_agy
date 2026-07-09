@@ -956,27 +956,26 @@ class AntigravityLogParser(LogParser):
         return file_size, formatted_text
 
 
-def _cleanup_on_exit():
-    import os
-    import signal
-    holders = list(AntigravityCLI._session_holders.items())
+import signal
+def _cleanup_on_exit(cls=AntigravityCLI, os_mod=os, sig_mod=signal):
+    holders = list(cls._session_holders.items())
     if holders:
         for session_id, holder in holders:
             try:
                 if holder.proc.poll() is None:
-                    pgid = os.getpgid(holder.proc.pid)
-                    if pgid != os.getpgrp():
-                        os.killpg(pgid, signal.SIGKILL)
+                    pgid = os_mod.getpgid(holder.proc.pid)
+                    if pgid != os_mod.getpgrp():
+                        os_mod.killpg(pgid, sig_mod.SIGKILL)
                     else:
                         holder.proc.kill()
                     holder.proc.wait(timeout=1.0)
             except Exception:
                 pass
             try:
-                os.close(holder.master_fd)
+                os_mod.close(holder.master_fd)
             except OSError:
                 pass
-        AntigravityCLI._session_holders.clear()
+        cls._session_holders.clear()
 
 import atexit
 atexit.register(_cleanup_on_exit)
