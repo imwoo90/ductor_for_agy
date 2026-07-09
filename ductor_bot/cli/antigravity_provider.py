@@ -45,13 +45,24 @@ class SessionHolder:
 
 async def _pty_drain_loop(master_fd: int, proc) -> None:
     """Read and discard output from the master PTY fd to prevent buffering hangs."""
+    import fcntl
+    try:
+        fl = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+    except Exception as e:
+        logger.debug("Failed to set PTY non-blocking: %s", e)
+
     while proc.poll() is None:
         try:
-            # Read asynchronously in worker thread
-            data = await asyncio.to_thread(os.read, master_fd, 4096)
+            # Read non-blocking data
+            data = os.read(master_fd, 4096)
             if not data:
                 break
+        except BlockingIOError:
+            # No data available right now, yield control
+            await asyncio.sleep(0.1)
         except OSError:
+            # EIO or similar when process dies
             break
         except Exception as e:
             logger.debug("Error in PTY drain loop: %s", e)
