@@ -940,6 +940,7 @@ class TelegramBot:
         if self._config.group_mention_only and not self._is_addressed(message):
             return
         await handle_command(self._orch, self._bot, message)
+        await self.sync_chat_commands(message.chat.id)
 
     async def _on_new(self, message: Message) -> None:
         if self._is_for_others(message):
@@ -947,6 +948,7 @@ class TelegramBot:
         if self._config.group_mention_only and not self._is_addressed(message):
             return
         await handle_new_session(self._orch, self._bot, message, topic_names=self._topic_names)
+        await self.sync_chat_commands(message.chat.id)
 
     async def _on_forum_topic_created(self, message: Message) -> None:
         """Cache the name when a forum topic is created."""
@@ -1254,6 +1256,7 @@ class TelegramBot:
         async with self._sequential.get_lock(key.lock_key):
             resp = await handle_model_callback(self._orch, key, data)
         await edit_selector_response(self._bot, key.chat_id, message_id, resp)
+        await self.sync_chat_commands(key.chat_id)
 
     async def _handle_cron_selector(self, chat_id: int, message_id: int, data: str) -> None:
         """Handle cron selector wizard by editing the message in-place."""
@@ -1366,6 +1369,9 @@ class TelegramBot:
         if text is None:
             return
 
+        chat_id = message.chat.id
+        await self.sync_chat_commands(chat_id)
+
         key = get_session_key(message)
         thread_id = get_thread_id(message)
         logger.debug("Message text=%s", text[:80])
@@ -1414,6 +1420,14 @@ class TelegramBot:
         if not message.text:
             return None
         text = strip_mention(message.text, self._bot_username)
+        
+        # Rewrite underscore commands to hyphen commands for agy CLI compatibility
+        lower = text.lower()
+        if lower.startswith("/grill_me"):
+            text = "/grill-me" + text[9:]
+        elif lower.startswith("/teamwork_preview"):
+            text = "/teamwork-preview" + text[17:]
+
         return build_reply_prompt(message, text)
 
     async def _handle_streaming(
@@ -1578,6 +1592,47 @@ class TelegramBot:
         from ductor_bot.messenger.telegram.upgrade_handler import handle_upgrade_callback
 
         await handle_upgrade_callback(self, chat_id, message_id, data, thread_id=thread_id)
+
+    async def sync_chat_commands(self, chat_id: int) -> None:
+        """Sync bot commands dynamically for a specific chat room based on the active provider."""
+        if self._orchestrator is None:
+            return
+
+        from ductor_bot.session.key import SessionKey
+        key = SessionKey(chat_id=chat_id, topic_id=None)
+
+        # Determine the active provider
+        active = await self._orchestrator._sessions.get_active(key)
+        if active is None:
+            _, provider = self._orchestrator.resolve_runtime_target(self._config.model)
+        else:
+            provider = active.provider
+
+        # Get desired commands list for this provider
+        from ductor_bot.commands import get_bot_commands, get_agy_commands
+        if provider == "antigravity":
+            cmd_defs = get_agy_commands()
+        else:
+            cmd_defs = get_bot_commands()
+
+        desired = [BotCommand(command=cmd, description=desc) for cmd, desc in cmd_defs]
+
+        # Check cache to prevent redundant API calls
+        if not hasattr(self, "_chat_command_states"):
+            self._chat_command_states = {}
+
+        current_state = self._chat_command_states.get(chat_id)
+        if current_state == provider:
+            return
+
+        from aiogram.types import BotCommandScopeChat
+        scope = BotCommandScopeChat(chat_id=chat_id)
+        try:
+            await self._bot.set_my_commands(desired, scope=scope)
+            self._chat_command_states[chat_id] = provider
+            logger.info("Dynamic commands updated for chat %d: provider=%s (%d commands)", chat_id, provider, len(desired))
+        except Exception:
+            logger.warning("Failed to update dynamic commands for chat %d", chat_id, exc_info=True)
 
     async def _sync_commands(self) -> None:
         from aiogram.types import BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats

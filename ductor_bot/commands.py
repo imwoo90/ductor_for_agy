@@ -39,6 +39,36 @@ def get_bot_commands() -> list[tuple[str, str]]:
     ]
 
 
+def get_agy_commands() -> list[tuple[str, str]]:
+    """Return bot commands including agy specific commands."""
+    return [
+        # Daily
+        ("new", t_cmd("bot.new")),
+        ("reset", t_cmd("bot.reset")),
+        ("stop", t_cmd("bot.stop")),
+        ("interrupt", t_cmd("bot.interrupt")),
+        ("model", t_cmd("bot.model")),
+        ("status", t_cmd("bot.status")),
+        ("memory", t_cmd("bot.memory")),
+        # agy CLI Integration Commands
+        ("plan", t_cmd("bot.plan")),
+        ("goal", t_cmd("bot.goal")),
+        ("grill_me", t_cmd("bot.grill_me")),
+        ("learn", t_cmd("bot.learn")),
+        ("teamwork_preview", t_cmd("bot.teamwork_preview")),
+        # Automation
+        ("cron", t_cmd("bot.cron")),
+        # Browse & info
+        ("showfiles", t_cmd("bot.showfiles")),
+        ("info", t_cmd("bot.info")),
+        ("help", t_cmd("bot.help")),
+        # Maintenance (rare)
+        ("diagnose", t_cmd("bot.diagnose")),
+        ("upgrade", t_cmd("bot.upgrade")),
+        ("restart", t_cmd("bot.restart")),
+    ]
+
+
 def get_multiagent_sub_commands() -> list[tuple[str, str]]:
     """Return multi-agent sub-commands with translated descriptions."""
     return [
