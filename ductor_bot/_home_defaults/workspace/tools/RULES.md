@@ -14,8 +14,8 @@ This is the navigation index for workspace tools.
 - recurring tasks / schedules -> `cron_tools/CLAUDE.md`
 - incoming HTTP triggers -> `webhook_tools/CLAUDE.md`
 - file/media processing -> `media_tools/CLAUDE.md`
-- sub-agent management (create/remove/list/ask) -> `agent_tools/CLAUDE.md`
-- background tasks (delegate, list, cancel) -> `task_tools/CLAUDE/GEMINI/AGENTS.md`
+- sub-agent management (create/remove/list/ask) -> `agent_tools/CLAUDE.md` (DEPRECATED for antigravity; use native define_subagent / invoke_subagent)
+- background tasks (delegate, list, cancel) -> `task_tools/CLAUDE/GEMINI/AGENTS.md` (DEPRECATED for antigravity; use native run_command in background)
 - custom user scripts -> `user_tools/CLAUDE.md`
 
 ## External API Secrets

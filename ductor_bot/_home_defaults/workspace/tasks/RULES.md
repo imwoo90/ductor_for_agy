@@ -1,5 +1,10 @@
 # Background Tasks Directory
 
+> [!WARNING]
+> **For Antigravity (`antigravity` / `agy`) Provider:**
+> This directory and its associated task tools are **DEPRECATED** and disabled on this custom branch.
+> Instead, run long-running commands asynchronously using the native `run_command` (by setting a short `WaitMsBeforeAsync` and ending your turn), and manage subagents using native `define_subagent` / `invoke_subagent` tools.
+
 This directory contains folders for active and completed background tasks.
 Each subfolder holds a task's metadata (TASKMEMORY.md, rule files).
 

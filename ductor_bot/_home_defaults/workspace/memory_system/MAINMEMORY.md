@@ -2,59 +2,12 @@
 
 ## About the User
 
-- **이름**: 우인명 님 (인명 님으로 호칭)
-- **가족**: 부인분 / 와이프분 (방서진 님. 호칭 시 '부인분' 또는 '와이프분' 사용), 아기 (도현이. 2026년 7월 기준 11개월, 호칭 시 '아드님' 등 사용)
-- **개발 환경**: 개인 리눅스 데스크톱 환경에서 가사 자산 및 재고 관리 시스템을 구축 중.
-- **주 사용 언어**: Rust
+(Empty -- will be populated as you learn about your human.)
 
 ## Learned Facts
 
-- **우비스 (Woovis)**: Hermes agent의 비서 시스템 이름.
-- **우덕터 (Wooductor)**: 본 에이전트(Antigravity)를 인명 님이 부르는 이름. '우비스(Woovis)' 및 'Ductor'와 구분하기 위해 사용함.
-- **세션 유지 및 비동기 알림 아키텍처 (PTY 홀더 & 로그 감시자)**:
-  - 구글 클라우드 세션 끊김을 차단하기 위해, 활성 대화 세션마다 가상 터미널 PTY(ECHO 비활성화) 위에서 백그라운드 `agy --prompt-interactive` 프로세스를 지연 로딩(Lazy Loading)하여 24시간 동안 Warm 상태를 유지합니다.
-  - 대기 중 백그라운드 작업이 완료되어 대답이 로그(`transcript.jsonl`)에 추가되면, 봇 데몬의 비동기 루프(`_run_log_monitor_loop`)가 늘어난 파일 크기 변동분만 `seek`하여 새 답변을 캐치한 뒤 텔레그램 방으로 선제적 푸시(`[우덕터 백그라운드 완료 알림]`)를 보냅니다.
-  - 1개 요청에 대답이 중복 전송되는 현상(레이스 컨디션)을 완벽히 막기 위해, 동기식 일반 답변을 생성하는 동안 `AntigravityCLI._sync_in_progress` 락(Lock) 플래그를 활성화합니다. 이를 통해 비동기 루프(`_run_log_monitor_loop`)가 해당 세션의 로그를 중복해서 읽는 것을 임시로 차단하고, 동기 전송이 완료되어 파일 크기를 `_processed_log_sizes`에 기록한 직후에만 락을 해제하도록 동기화 로직을 개선했습니다.
-- **Ductor**: 같은 PC에 설치된 다른 AI 에이전트 시스템.
-- **연동 봇**: 우덕터(본 에이전트)는 텔레그램 봇 `@wim_ductor_bot` (토큰: `8483536851:AAHWWDiXQ7a5PT-juK4deILQ3higBBMT4k8`)을 사용하여 소통합니다. (※ `@Wimbis_bot`은 Hermes/우비스 에이전트가 사용하는 봇이므로 혼용을 절대 금지합니다.)
-- **허용된 그룹**: 텔레그램 그룹 `-5241484543` (InMyung and DuctorBot) 및 사용자 ID `8261039349`가 허용 리스트에 등록됨.
-- **기본 소통 채널**: 사용자와의 모든 기본 대화 및 지시 사항 전달은 텔레그램 메신저를 통해 수행됩니다. 사용자가 텔레그램을 통해 에이전트에게 메시지를 보내면, 에이전트 역시 텔레그램 봇을 통해 응답하고 대답을 제공해야 합니다.
-- **가사 ERP 데이터베이스**: `/home/wimvm/my-smart-butler/household.db`에 위치하며 `purchase_records`, `household_assets`, `consumption_history` 등의 테이블로 구성됨.
-- **동기식 락과 백그라운드 모니터링 로그 누락 버그 해결 (v4.1)**: `_run_log_monitor_loop`에서 `AntigravityCLI._sync_in_progress`가 활성화된 동안 `last_sizes`를 미리 최신화해버려 동기 실행 중 쌓인 생각/도구 로그가 스킵되던 버그를, 락 상태일 때 `last_sizes` 갱신을 생략(continue)하도록 `telegram/app.py`를 수정하여 해결했습니다.
-- **서비스 재시작 명령어 차이**: systemd 환경에서 `ductor restart` CLI는 실행 주체(자식 agy 프로세스)가 함께 죽는 self-killing 구조로 인해 서비스가 중지된 채 멈추지만, 텔레그램 `/restart` 명령어는 단순 exit code 42 리턴 후 systemd가 재기동하는 구조이므로 정상 사용 가능합니다. 터미널에서는 `systemctl --user restart ductor`를 사용해야 합니다.
-- **경량화 장보기 아키텍처 (v4.0 Lightweight)**:
-  - **비서 에이전트의 역할**: 냉장고 재고를 스캔하여 부족한 품목을 분석하고, 쿠팡에서 가성비 최적의 상품을 검색해 리스트를 구축한 후 대화방(텔레그램 등)에 직접 모바일 쿠팡 앱 연결 링크를 전달합니다.
-  - **웹 대시보드 및 터널 완전 제거**: 모바일 전용 로컬 웹 서버(`butler_server.py`) 및 외부망 접속 터널(`tunnel_watchdog.py`)을 완전히 걷어내고, 시스템을 가볍게 동작시킵니다.
-  - **사용자의 결제 및 직접 DB 마감**: 사용자는 대화방에서 개별 품목의 `[👉 쿠팡 앱 열기]` 링크를 눌러 모바일 앱에서 직접 결제를 마칩니다.
-  - **텔레그램 대화 피드백 기반 DB 자동 마감**: 결제 완료 후 텔레그램 채팅방에 `다 샀어` 또는 `우유 샀어`라고 응답하면, `confirm_purchase.py`가 작동해 추천 품목들을 일괄/개별 트랜잭션으로 자동 마감하여 우리 집 데이터베이스(`household.db`) 재고를 갱신합니다.
-- **Git Credential Helper 설정**: 인명 님의 GitHub Personal Access Token을 로컬 기기의 `git config --global credential.helper store`에 등록하여, 터미널이나 에이전트에서 인증 프롬프트 없이 자연스럽게 push 및 원격 작업을 수행할 수 있도록 설정했습니다. (※ 보안을 위해 토큰은 소스 코드나 메모리 저장소 파일에 하드코딩하지 않고 로컬 기기 사용자 홈 환경에 격리 보관함)
+(Empty -- will be populated as the agent learns.)
 
 ## Decisions and Preferences
 
-- **추천 구매 요청 시 구매 링크 포함**: 사용자가 추천 구매를 요청할 때, 항상 상품에 대한 구체적인 구매 링크(예: 쿠팡 링크 등)를 함께 포함하여 답변해야 합니다.
-- **정직하고 투명한 보고**: 절대 결과나 로그를 임의로 조작하거나 성공한 것처럼 꾸며서 보고해서는 안 됨. 에러나 장애 상황이 발생하면 있는 그대로 정직하게 보고해야 함.
-- **우덕터 명칭 사용 준수**: 본 에이전트(우덕터)가 제어하는 스마트 집사 시스템의 모든 텔레그램 메시지 헤더, 입고 확인 문구, 시스템 리포트 출력 시 비서의 명칭은 반드시 `[우덕터 집사]` 또는 `[우덕터]`로 표기해야 하며, 절대 `[우비스]` 혹은 `[우비스 집사]`로 표기해서는 안 됩니다. (우비스는 Hermes Agent의 명칭이므로 명확히 구분해야 함)
-- **우비스(Woovis) 시스템 변경 금지**: 우비스(Woovis) 시스템(Hermes agent의 비서 시스템)을 변경하거나 수정하려는 시도를 절대로 하지 않음.
-- **모듈형 설계**: 일반 목적의 파이썬 CLI 도구들은 `/home/wimvm/my-smart-butler/` 디렉터리에 개발하고, 특정 시나리오별 비즈니스 로직은 `skills/` 하위에서 실행하도록 오케스트레이션 설계.
-- **코딩 및 작업 방식**:
-  - 이전 Hermes 시절에는 API 비용 문제로 Hermes가 직접 코딩하지 않고 `agy`에 작업을 위임했으나, 이제 Antigravity(본인)가 직접 비서로 동작하므로 직접 코딩 및 도구 실행이 가능함.
-  - 단, 가사 ERP 핵심 비즈니스 로직은 모듈 구조(`db_manager.py`, `confirm_purchase.py`, `butler_restock_analyzer.py` 등)를 철저히 지키며 개발 및 갱신을 진행해야 합니다.
-- **AI 오케스트레이션 및 작업 위임 규칙**:
-  - 빌드, 대형 컴파일, 장시간 걸리는 분석 및 테스트(대략 30초 이상 예상되는 헤비한 작업)가 주어지면 직접 실행을 고집하지 않고 **AI 오케스트레이터** 역할을 활성화합니다.
-  - 이 경우 우선 `/plan`을 수립한 뒤, 인명 님이 구축하신 **PTY 홀더 & 로그 감시자 비동기 알림 아키텍처**를 활용하여 안티그래비티 자체의 네이티브 비동기 명령어 실행(`run_command`를 백그라운드로 실행) 및 서브에이전트 기능(`invoke_subagent`)만을 사용해 작업을 위임하고 세션을 즉시 릴리즈합니다. (별도의 Ductor 외장 도구 `create_task.py`는 불필요하므로 사용하지 않습니다.)
-- **동적 식단 및 레시피 생성**: 식재료 재고에 따라 일주일 식단과 요리법(레시피)을 dynamic하게 추천할 수 있어야 하며, static하게 파일에 레시피들을 전부 명시하는 대신 `agy` CLI를 사용한 LLM 호출로 실시간으로 계획 및 각 메뉴 조리법을 생성하여 구매 링크와 함께 출력해야 합니다.
-- **두 에이전트 시스템(우비스-우덕터)의 철저한 격리 및 혼용 금지**:
-  - **우비스(Woovis/Hermes)** 시스템과 **우덕터(Wooductor/Ductor/Antigravity)** 시스템은 독립된 별개의 AI 프레임워크입니다.
-  - 우비스가 하던 작업(예: `my-smart-butler` 개발 및 관리)을 이어서 수행할 때, 절대 우비스의 시스템 디렉토리(`.hermes/`) 내부 설정, 파일, 크론 잡(`jobs.json` 등)을 수정하거나 개입해서는 안 됩니다.
-  - 작업 위임 시 두 시스템의 태스크 매니저를 혼용하지 마십시오. 우덕터에서는 단순 백그라운드 프로세스 실행 및 모니터링은 비동기 네이티브 명령을 사용하되, 역할 분할 및 지식 협업을 위한 다중 에이전트 구동은 안티그래비티(`agy`) 자체의 네이티브 서브에이전트 기능(`invoke_subagent`)을 사용합니다. 우비스의 위임 방식이나 `agy`를 백그라운드 크론/모니터링 스크립트 실행 관리 목적으로 구동해서는 안 됩니다.
-  - `my-smart-butler` 서비스 내부에서 `agy` CLI를 서브프로세스로 호출할 때는 **v3.2 Stdin Fix** 규칙(표준 입력 격리 `stdin=subprocess.DEVNULL`, 실행 타임아웃 지정, 예외 처리 및 로컬 정규식 fallback 패턴 적용)을 반드시 준수하여 프로세스 행(Hang) 및 스레드 고갈 문제를 방지해야 합니다.
-- **특정 파일 검토 요청 시 자동 첨부**: 사용자가 특정 파일의 검토를 요청하거나, 에이전트(우덕터)가 사용자에게 특정 파일의 검토를 요청할 때, 사용자가 "첨부해 보내줘"라고 명시적으로 말하지 않더라도 해당 파일을 `workspace/output_to_user/` 경로로 복사한 후 `<file:/home/wimvm/ductor/workspace/output_to_user/파일명>` 태그를 메시지에 포함하여 자동으로 텔레그램에 첨부하여 전송해야 합니다.
-- **텔레그램 소통 시 파일 링크 및 파일명 자동 하이퍼링크 처리 방지**: 모바일 텔레그램 환경에서는 `file://` 프로토콜 링크를 열 수 없습니다. 또한 파일명(예: `TASKMEMORY.md`)을 일반 텍스트로 보낼 경우, 텔레그램이 이를 인터넷 도메인 주소로 오인하여 clickable한 웹 링크로 자동 변환하여 클릭 시 DNS 에러(DNS_PROBE_FINISHED_NXDOMAIN)가 발생합니다. 따라서 사용자와의 소통 시 파일명은 반드시 백틱(`` `TASKMEMORY.md` ``)으로 감싸 코드 포맷으로 표시하여 자동 하이퍼링크 변환을 방지해야 하며, 파일의 핵심 내용은 굳이 파일을 열어보지 않아도 되도록 메시지에 텍스트로 요약 및 첨부해 주어야 합니다.
-- **백그라운드 개발 서버 구동 규칙**: 개발 중인 서버(예: `dx serve` 등)를 구동하거나 테스트할 때는 세션 락 및 프로세스 고아 방지를 위해 절대 백그라운드(`&`)로 직접 실행하지 않고, 반드시 `tools/dev_manager.py` 스크립트를 사용하여 프로세스 그룹을 제어해야 합니다. (시작: `python3 tools/dev_manager.py start "<command>"`, 종료: `python3 tools/dev_manager.py stop`)
-
---- SHARED KNOWLEDGE START ---
-# Shared Knowledge — All Agents
-
-Knowledge written here is automatically synced into every
-agent's MAINMEMORY.md by the Supervisor.
---- SHARED KNOWLEDGE END ---
+(Empty -- record important decisions and their reasoning here.)
