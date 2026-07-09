@@ -84,7 +84,9 @@ class RulesSelector:
             return "all-clis"
         if self._codex_authenticated:
             return "codex-only"
-        if self._gemini_authenticated or self._antigravity_authenticated:
+        if self._antigravity_authenticated:
+            return "antigravity"
+        if self._gemini_authenticated:
             return "gemini-only"
         return "claude-only"
 
