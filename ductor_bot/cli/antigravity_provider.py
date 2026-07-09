@@ -176,6 +176,15 @@ class AntigravityCLI(BaseCLI):
                 if orch is None or bus is None:
                     continue
 
+                try:
+                    marker_path = orch.paths.ductor_home / "restart-requested"
+                    if marker_path.is_file():
+                        logger.info("Antigravity Log Monitor: Restart marker detected early, shutting down class")
+                        cls.shutdown_class()
+                        break
+                except Exception as e:
+                    logger.debug("Failed to check restart marker: %s", e)
+
                 sessions = await orch._sessions.list_all()
                 for session in sessions:
                     chat_id = session.chat_id
