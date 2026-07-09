@@ -123,7 +123,10 @@ class ObserverManager:
         self.webhook = WebhookObserver(
             paths, webhook_manager, config=config, codex_cache=codex_cache
         )
-        self.log_monitor = LogMonitorObserver(paths, orchestrator)
+        if config.provider == "antigravity":
+            self.log_monitor = LogMonitorObserver(paths, orchestrator)
+        else:
+            self.log_monitor = None
 
     # -- Start / stop ---------------------------------------------------------
 
