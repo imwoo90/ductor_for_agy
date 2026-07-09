@@ -960,10 +960,10 @@ class AntigravityLogParser(LogParser):
             blockquote_thinking = "\n".join(f">! {l}" for l in combined_thinking.splitlines())
             parts.append(f"💭 **Thinking Process:**\n{blockquote_thinking}")
         if tool_calls:
-            calls_list = "\n".join(f"• {tc}" for tc in tool_calls)
+            calls_list = "\n".join(f">! • {tc}" for tc in tool_calls)
             parts.append(f"🛠️ **Tool Calls:**\n{calls_list}")
         if tool_completions:
-            completions_list = "\n".join(f"• {tc}" for tc in tool_completions)
+            completions_list = "\n".join(f">! • {tc}" for tc in tool_completions)
             parts.append(f"📥 **Tool Completions:**\n{completions_list}")
         if final_content:
             parts.append(f"✅ **Final Response:**\n{final_content}")
