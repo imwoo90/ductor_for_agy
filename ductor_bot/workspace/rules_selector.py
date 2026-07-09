@@ -128,6 +128,13 @@ class RulesSelector:
             logger.debug("Selected variant template: %s", variant_template.name)
             return variant_template
 
+        # Priority 1.5: Fallback to gemini-only for antigravity
+        if variant == "antigravity":
+            gemini_template = directory / "RULES-gemini-only.md"
+            if gemini_template.exists():
+                logger.debug("Selected gemini-only fallback template for antigravity: %s", gemini_template.name)
+                return gemini_template
+
         # Priority 2: Static fallback
         static_template = directory / "RULES.md"
         if static_template.exists():
