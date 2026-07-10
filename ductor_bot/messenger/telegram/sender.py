@@ -137,6 +137,8 @@ async def _send_text_chunks(
     html_text = markdown_to_telegram_html(clean_text)
     chunks = split_html_message(html_text)
     for i, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
         try:
             if reply_to_message_id and i == 0:
                 last_msg = await bot.send_message(
@@ -168,6 +170,8 @@ async def _send_text_chunks(
             remaining = "\n\n".join(chunks[i:])
             plain = html_mod.unescape(re.sub(r"<[^>]+>", "", remaining))
             for pc in split_html_message(plain):
+                if not pc.strip():
+                    continue
                 last_msg = await bot.send_message(
                     chat_id=chat_id,
                     text=pc,

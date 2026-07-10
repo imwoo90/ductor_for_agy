@@ -137,6 +137,15 @@ def _make_oneshot_process(stdout: bytes = b"hello world") -> AsyncMock:
     proc = AsyncMock(spec=asyncio.subprocess.Process)
     proc.returncode = 0
     proc.pid = 12345
+    
+    mock_stdout = AsyncMock()
+    mock_stdout.read = AsyncMock(return_value=stdout)
+    proc.stdout = mock_stdout
+    
+    mock_stderr = AsyncMock()
+    mock_stderr.read = AsyncMock(return_value=b"")
+    proc.stderr = mock_stderr
+    
     proc.communicate = AsyncMock(return_value=(stdout, b""))
     return proc
 

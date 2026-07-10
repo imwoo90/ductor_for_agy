@@ -212,6 +212,15 @@ class AntigravityCLI(BaseCLI):
 
                     session_id = provider_data.session_id
 
+                    from ductor_bot.log_context import set_log_context
+                    set_log_context(
+                        agent_name="main",
+                        operation="hb",
+                        chat_id=chat_id,
+                        topic=session.topic_name,
+                        session_id=session_id,
+                    )
+
                     parser = AntigravityLogParser()
                     if not parser.is_session_active(session_id):
                         continue
