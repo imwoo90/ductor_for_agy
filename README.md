@@ -435,8 +435,8 @@ ductor runs official provider CLIs and does not impersonate provider clients. Va
 ## Contributing
 
 ```bash
-git clone https://github.com/PleasePrompto/ductor.git
-cd ductor
+git clone -b ductor_for_agy https://github.com/imwoo90/ductor_for_agy.git
+cd ductor_for_agy
 uv sync --extra dev
 ```
 

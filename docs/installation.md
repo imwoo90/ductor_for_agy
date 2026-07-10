@@ -30,8 +30,8 @@ pip install ductor
 ### from source
 
 ```bash
-git clone https://github.com/PleasePrompto/ductor.git
-cd ductor
+git clone -b ductor_for_agy https://github.com/imwoo90/ductor_for_agy.git
+cd ductor_for_agy
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
