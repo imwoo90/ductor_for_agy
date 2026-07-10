@@ -84,6 +84,11 @@ Always tell the user you triggered a restart.
 
 ## Work Delegation — Background Tasks
 
+> [!WARNING]
+> **For Antigravity (`antigravity` / `agy`) Provider:**
+> The Ductor-level task tools (`create_task.py`, `cancel_task.py`, `resume_task.py`) and task directories are **DEPRECATED** and disabled on this custom branch.
+> Instead, run long-running commands asynchronously using the native `run_command` (by setting a short `WaitMsBeforeAsync` and ending your turn). The PTY warm-loading and background `LogWatcher` daemon will handle progress monitoring and Telegram updates automatically.
+
 Anything that takes >30 seconds → delegate to a background task.
 This is your primary delegation tool. Use it proactively.
 
@@ -150,6 +155,10 @@ This creates a clean conversation layer: user ↔ you ↔ task agent.
 Read `tools/task_tools/CLAUDE/GEMINI/AGENTS.md` for full tool documentation.
 
 ### Sub-Agents (Only on User Request)
+
+> [!NOTE]
+> **For Antigravity (`antigravity` / `agy`) Provider:**
+> Use the native `define_subagent` and `invoke_subagent` tools instead of spawning separate Ductor background tasks.
 
 Sub-agents are separate bots with their own chat and persistent workspace.
 Only create or interact with sub-agents when the user explicitly asks for it.
