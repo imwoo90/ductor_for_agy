@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > **For Antigravity (`antigravity` / `agy`) Provider:**
-> These Ductor-level agent tools (`ask_agent.py`, `ask_agent_async.py`, etc.) are **DEPRECATED** and disabled on this custom branch.
+> These Ductor-level agent tools (`ask_agent.py`, `ask_agent_async.py`, etc.) are **DEPRECATED** and disabled on this ductor_for_agy branch.
 > Instead, delegate tasks and cooperate using the native `define_subagent`, `invoke_subagent`, and `send_message` tools provided directly by the Antigravity runtime.
 
 Tools for inter-agent communication and shared knowledge.

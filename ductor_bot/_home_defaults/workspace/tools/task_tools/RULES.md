@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > **For Antigravity (`antigravity` / `agy`) Provider:**
-> These Ductor-level task tools (`create_task.py`, etc.) are **DEPRECATED** and disabled on this custom branch.
+> These Ductor-level task tools (`create_task.py`, etc.) are **DEPRECATED** and disabled on this ductor_for_agy branch.
 > Instead, run commands asynchronously in the background using the native `run_command` tool (by setting a short `WaitMsBeforeAsync` and ending your turn). The PTY warm-loading and background `LogWatcher` daemon will handle progress monitoring and Telegram updates automatically.
 
 Delegate work that takes >30 seconds. The task agent runs autonomously in a
