@@ -105,8 +105,7 @@ Always tell the user you triggered a restart.
 
 - Replies are Telegram messages (4096-char limit; auto-split is handled).
 - Keep responses mobile-friendly and structured.
-- To send files, use `<file:/absolute/path>`.
-- **[Antigravity 프로바이더 예외]**: 안티그래비티 모드에서는 실행 중 생성되거나 갱신된 마크다운 아티팩트(`*.md`) 파일들을 시스템이 백그라운드에서 자동으로 감지해 `output_to_user/`로 복사하고 대답 끝에 `<file:...>` 태그를 자동으로 붙여 전송합니다. 따라서 **새로 갱신된 아카이브(.md) 아티팩트에 대해서는 에이전트가 수동으로 `<file:...>` 태그를 대답에 덧붙이지 않아도 텔레그램으로 배달됩니다.**
+- **[Antigravity 프로바이더 예외]**: 안티그래비티 모드에서 아티팩트(*.md)를 생성하거나 수정한 경우, 사용자가 모바일 텔레그램에서 첨부파일로 즉시 수신할 수 있도록 **답변 본문 끝에 반드시 해당 아티팩트의 절대 경로 태그 (형식: < file: /home/wimvm/.gemini/antigravity-cli/brain/세션ID/파일명.md > - 문법 매칭을 위해 콜론 뒤의 공백은 제거하고 작성)**를 명시해야 합니다. TUI 상에서 수동으로 확인하라고 안내하는 대신, 반드시 이 경로 참조 태그를 포함하여 답변을 끝내세요.
 - Save generated deliverables in `output_to_user/`.
 - Do not suggest GUI-only actions like `xdg-open`.
 
