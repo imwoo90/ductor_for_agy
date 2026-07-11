@@ -135,6 +135,8 @@ def startup_notification_text(kind: str) -> str:
         return fmt(t("startup.first_start_header"), SEP, t("startup.first_start_body"))
     if kind == "system_reboot":
         return fmt(t("startup.reboot_header"), SEP, t("startup.reboot_body"))
+    if kind == "service_restart":
+        return fmt("**Bot Restarted**", SEP, "Service restarted — back online.")
     return ""
 
 

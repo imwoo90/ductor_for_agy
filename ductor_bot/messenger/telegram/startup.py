@@ -47,7 +47,7 @@ async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None)
 
     startup_info = await asyncio.to_thread(detect_startup_kind, bot._orch.paths.startup_state_path)
     await asyncio.to_thread(save_startup_state, bot._orch.paths.startup_state_path, startup_info)
-    if sentinel is None and startup_info.kind.value != "service_restart":
+    if sentinel is None:
         note = startup_notification_text(startup_info.kind.value)
         if note:
             await bot.notify_startup(note)

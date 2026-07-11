@@ -316,35 +316,52 @@ class TelegramBot:
         """Route startup-lifecycle notifications (#64).
 
         Fallback policy:
-          * ``startup_targets`` empty (default) -> broadcast via ``notify_all``.
-          * ``startup_targets`` non-empty but every entry disabled -> explicit
-            silence (no fallback). This is how users opt out of lifecycle
-            notifications without losing upgrade routing.
-
-        Per-target failures are swallowed at warning level so a single bad
-        target does not mask the rest.
+          * ``startup_targets`` empty (default) or no enabled targets -> fall back to
+            last active chat from last_active_chat.json.
+          * If last active chat is also unavailable -> broadcast via ``notify_all``.
         """
         configured = self._config.notifications.startup_targets
-        if not configured:
-            await self._notification_service.notify_all(text)
-            return
-        targets = [t for t in configured if t.enabled and t.chat_id is not None]
-        for target in targets:
+        sent_any = False
+        if configured:
+            targets = [t for t in configured if t.enabled and t.chat_id is not None]
+            for target in targets:
+                try:
+                    assert target.chat_id is not None
+                    await send_rich(
+                        self._bot,
+                        target.chat_id,
+                        text,
+                        SendRichOpts(thread_id=target.topic_id),
+                    )
+                    sent_any = True
+                except Exception:
+                    logger.warning(
+                        "notify_startup: delivery failed for chat_id=%s topic_id=%s",
+                        target.chat_id,
+                        target.topic_id,
+                        exc_info=True,
+                    )
+
+        if not sent_any:
             try:
-                assert target.chat_id is not None
-                await send_rich(
-                    self._bot,
-                    target.chat_id,
-                    text,
-                    SendRichOpts(thread_id=target.topic_id),
-                )
-            except Exception:
-                logger.warning(
-                    "notify_startup: delivery failed for chat_id=%s topic_id=%s",
-                    target.chat_id,
-                    target.topic_id,
-                    exc_info=True,
-                )
+                from ductor_bot.infra.json_store import load_json
+                last_active_path = self._orch.paths.ductor_home / "last_active_chat.json"
+                last_active = load_json(last_active_path)
+                if last_active and "chat_id" in last_active:
+                    chat_id = int(last_active["chat_id"])
+                    thread_id = last_active.get("thread_id")
+                    await send_rich(
+                        self._bot,
+                        chat_id,
+                        text,
+                        SendRichOpts(thread_id=thread_id),
+                    )
+                    sent_any = True
+            except Exception as e:
+                logger.warning("notify_startup: failed to notify last active chat: %s", e)
+
+        if not sent_any:
+            await self._notification_service.notify_all(text)
 
     async def notify_upgrade(self, text: str, opts: SendRichOpts | None = None) -> None:
         """Route upgrade-available notifications (#64).
@@ -1371,6 +1388,15 @@ class TelegramBot:
 
         chat_id = message.chat.id
         await self.sync_chat_commands(chat_id)
+
+        try:
+            from ductor_bot.infra.json_store import atomic_json_save
+            atomic_json_save(
+                self._orch.paths.ductor_home / "last_active_chat.json",
+                {"chat_id": chat_id, "thread_id": get_thread_id(message)},
+            )
+        except Exception:
+            logger.debug("Failed to record last active chat", exc_info=True)
 
         key = get_session_key(message)
         thread_id = get_thread_id(message)
