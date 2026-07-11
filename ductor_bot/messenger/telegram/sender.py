@@ -243,27 +243,10 @@ async def send_file(
     """Send a local file with Telegram media/document routing."""
     if allowed_roots is not None and not is_path_safe(path, allowed_roots):
         logger.warning("File path blocked (outside allowed roots): %s", path)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"Could not send <code>{path.name}</code> — "
-                f"file is outside the allowed directory.\n\n"
-                f'Fix: set <code>"file_access": "all"</code> in '
-                f"<code>config.json</code>, then <b>/restart</b>."
-            ),
-            parse_mode="HTML",
-            message_thread_id=thread_id,
-        )
         return
 
     if not await asyncio.to_thread(path.exists):
         logger.warning("File not found, skipping: %s", path)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"[File not found: {path.name} (Tried host path: {path})]",
-            parse_mode=None,
-            message_thread_id=thread_id,
-        )
         return
 
     try:
@@ -282,17 +265,5 @@ async def send_file(
         logger.debug("Network error sending file (likely shutdown), skipping: %s", path)
     except OSError:
         logger.exception("Failed to send file: %s", path)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"[Failed to send: {path.name}]",
-            parse_mode=None,
-            message_thread_id=thread_id,
-        )
     except TelegramBadRequest:
         logger.exception("Telegram rejected file upload: %s", path)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"[Failed to send: {path.name}]",
-            parse_mode=None,
-            message_thread_id=thread_id,
-        )
