@@ -248,3 +248,26 @@ class TestSplitHTMLMessage:
         assert len(result) >= 3
         for chunk in result:
             assert len(chunk) <= 20
+
+    def test_tag_safe_splitting(self) -> None:
+        from ductor_bot.messenger.telegram.formatting import split_html_message
+
+        # Test blockquote tag closure and reopen
+        text = "<blockquote expandable>Line 1\nLine 2\nLine 3</blockquote>"
+        result = split_html_message(text, max_len=30)
+        
+        # Check that it splits and wraps the tags in both chunks
+        assert len(result) >= 2
+        for chunk in result:
+            assert chunk.startswith("<blockquote expandable>")
+            assert chunk.endswith("</blockquote>")
+            assert len(chunk) <= 30
+
+        # Test nested tags: <blockquote><b>bold text</b></blockquote>
+        text = "<blockquote><b>" + "X" * 30 + "</b></blockquote>"
+        result = split_html_message(text, max_len=30)
+        assert len(result) >= 2
+        for chunk in result:
+            assert chunk.startswith("<blockquote><b>")
+            assert chunk.endswith("</b></blockquote>")
+            assert len(chunk) <= 30

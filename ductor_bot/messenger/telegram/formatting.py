@@ -199,21 +199,88 @@ def _accumulate_parts(
 
 
 def split_html_message(text: str, max_len: int = TELEGRAM_MSG_LIMIT) -> list[str]:
-    """Split an HTML message into chunks that fit Telegram's limit.
-
-    Splits on paragraph boundaries (double newline) first, then single
-    newlines, then hard character splits as a last resort.
+    """Split an HTML message into chunks that fit Telegram's limit,
+    ensuring HTML tags are properly closed in each chunk and re-opened in the next.
     """
     if len(text) <= max_len:
         return [text]
 
-    chunks, oversized = _accumulate_parts(text.split("\n\n"), "\n\n", max_len)
+    # Tokenize HTML: split by tags, double newlines, and single newlines
+    tokens = re.split(r'(</?[a-zA-Z][^>]*>|\n\n|\n)', text)
+    
+    chunks = []
+    current_chunk_parts = []
+    current_len = 0
+    open_tags = []  # list of full start tags, e.g., ['<blockquote expandable>', '<b>']
 
-    for para in oversized:
-        line_chunks, huge_lines = _accumulate_parts(para.split("\n"), "\n", max_len)
-        chunks.extend(line_chunks)
-        for big in huge_lines:
-            for offset in range(0, len(big), max_len):
-                chunks.append(big[offset : offset + max_len])
+    def get_open_tag_name(tag: str) -> str:
+        return tag.strip('<>').split()[0]
 
-    return chunks
+    def get_close_tag_name(tag: str) -> str:
+        return tag.strip('<>/').split()[0]
+
+    for token in tokens:
+        if not token:
+            continue
+        
+        is_tag = token.startswith('<') and token.endswith('>')
+        closing_tags_str = "".join(f"</{get_open_tag_name(t)}>" for t in reversed(open_tags))
+        
+        # If this is text and it is longer than the remaining space in the chunk
+        if not is_tag and len(token) > (max_len - current_len - len(closing_tags_str)):
+            available = max_len - current_len - len(closing_tags_str)
+            if available > 0:
+                current_chunk_parts.append(token[:available])
+                token = token[available:]
+            
+            # Close current chunk and start a new one
+            current_chunk_parts.append(closing_tags_str)
+            chunks.append("".join(current_chunk_parts))
+            
+            # Reset chunk and re-open tags
+            current_chunk_parts = list(open_tags)
+            current_len = sum(len(t) for t in open_tags)
+            
+            # Recursively split the remaining text if it still exceeds max_len
+            while len(token) > (max_len - current_len - len(closing_tags_str)):
+                available = max_len - current_len - len(closing_tags_str)
+                current_chunk_parts.append(token[:available])
+                token = token[available:]
+                current_chunk_parts.append(closing_tags_str)
+                chunks.append("".join(current_chunk_parts))
+                
+                # Reset chunk
+                current_chunk_parts = list(open_tags)
+                current_len = sum(len(t) for t in open_tags)
+
+        # If adding this token (tag or text) exceeds max_len, split before it
+        elif current_chunk_parts and (current_len + len(token) + len(closing_tags_str) > max_len):
+            current_chunk_parts.append(closing_tags_str)
+            chunks.append("".join(current_chunk_parts))
+            
+            # Reset chunk and re-open tags
+            current_chunk_parts = list(open_tags)
+            current_len = sum(len(t) for t in open_tags)
+
+        current_chunk_parts.append(token)
+        current_len += len(token)
+        
+        if is_tag:
+            if token.startswith('</'):
+                # End tag
+                name = get_close_tag_name(token)
+                # Find matching start tag from the end of open_tags
+                for idx in range(len(open_tags) - 1, -1, -1):
+                    if get_open_tag_name(open_tags[idx]) == name:
+                        open_tags.pop(idx)
+                        break
+            elif not token.endswith('/>'):
+                # Start tag
+                open_tags.append(token)
+
+    if current_chunk_parts:
+        closing_tags_str = "".join(f"</{get_open_tag_name(t)}>" for t in reversed(open_tags))
+        current_chunk_parts.append(closing_tags_str)
+        chunks.append("".join(current_chunk_parts))
+
+    return [c for c in chunks if c.strip()] or [""]

@@ -36,10 +36,19 @@ _DEFAULT_TIMEOUT = 300.0  # 5 minutes, matches agy --print-timeout default
 import time
 
 class SessionHolder:
-    def __init__(self, proc, master_fd: int, reader_task: asyncio.Task) -> None:
+    def __init__(
+        self,
+        proc,
+        master_fd: int,
+        reader_task: asyncio.Task,
+        chat_id: int | None = None,
+        topic_id: int | None = None,
+    ) -> None:
         self.proc = proc
         self.master_fd = master_fd
         self.reader_task = reader_task
+        self.chat_id = chat_id
+        self.topic_id = topic_id
         self.last_active = time.time()
 
 
@@ -206,11 +215,21 @@ class AntigravityCLI(BaseCLI):
                     if provider_name != "antigravity":
                         continue
 
-                    provider_data = session.provider_sessions.get(provider_name)
-                    if not provider_data or not provider_data.session_id:
-                        continue
+                    session_id = None
+                    # Prioritize active running process session ID if one exists
+                    for sid, holder in cls._session_holders.items():
+                        if holder.chat_id == chat_id and holder.topic_id == topic_id:
+                            if holder.proc.poll() is None:
+                                session_id = sid
+                                break
 
-                    session_id = provider_data.session_id
+                    if not session_id:
+                        provider_data = session.provider_sessions.get(provider_name)
+                        if provider_data and provider_data.session_id:
+                            session_id = provider_data.session_id
+
+                    if not session_id:
+                        continue
 
                     from ductor_bot.log_context import set_log_context
                     set_log_context(
@@ -285,6 +304,32 @@ class AntigravityCLI(BaseCLI):
             logger.debug("No running event loop, skipping background log monitor task creation")
 
     @classmethod
+    def _terminate_holder(cls, session_id: str) -> None:
+        """Terminate and clean up a specific session holder."""
+        import os
+        import signal
+        holder = cls._session_holders.pop(session_id, None)
+        if holder is not None:
+            holder.reader_task.cancel()
+            try:
+                if holder.proc.poll() is None:
+                    try:
+                        pgid = os.getpgid(holder.proc.pid)
+                        if pgid != os.getpgrp():
+                            os.killpg(pgid, signal.SIGKILL)
+                        else:
+                            holder.proc.kill()
+                    except Exception:
+                        holder.proc.kill()
+                    holder.proc.wait(timeout=1.0)
+            except Exception:
+                pass
+            try:
+                os.close(holder.master_fd)
+            except OSError:
+                pass
+
+    @classmethod
     def _cleanup_expired_holders(cls) -> None:
         import time
         import signal
@@ -321,6 +366,8 @@ class AntigravityCLI(BaseCLI):
         workspace: Path,
         env: dict,
         permission_mode: str | None = None,
+        chat_id: int | None = None,
+        topic_id: int | None = None,
     ) -> None:
         if getattr(cls, "_shutting_down", False):
             return
@@ -387,7 +434,9 @@ class AntigravityCLI(BaseCLI):
             
             # Spawn background reader task to drain PTY buffer
             reader_task = asyncio.create_task(_pty_drain_loop(master_fd, proc))
-            cls._session_holders[session_id] = SessionHolder(proc, master_fd, reader_task)
+            cls._session_holders[session_id] = SessionHolder(
+                proc, master_fd, reader_task, chat_id=chat_id, topic_id=topic_id
+            )
             logger.info("Spawned session holder for %s (PID=%d)", session_id, proc.pid)
         except Exception as e:
             logger.error("Failed to spawn session holder for %s: %s", session_id, e)
@@ -505,10 +554,19 @@ class AntigravityCLI(BaseCLI):
         """Send a prompt via ``agy --print`` and return the full response."""
         effective_timeout = timeout_seconds or _DEFAULT_TIMEOUT
         env = antigravity_process_env(build_subprocess_env(self._config))
+        resolved_id = None
 
+        chat_id = self._config.chat_id
+        topic_id = self._config.topic_id
         if resume_session is None and not continue_session:
             import uuid
             resume_session = str(uuid.uuid4())
+
+            # Clean up existing holder for the same chat and topic to prevent process leaks
+            for sid, holder in list(self.__class__._session_holders.items()):
+                if holder.chat_id == chat_id and holder.topic_id == topic_id:
+                    logger.info("New session requested for chat=%s topic=%s, terminating old holder %s", chat_id, topic_id, sid)
+                    self.__class__._terminate_holder(sid)
 
         requested_session_existed = False
         if resume_session:
@@ -532,10 +590,26 @@ class AntigravityCLI(BaseCLI):
 
         if session_id:
             self.__class__._sync_in_progress[session_id] = True
+            if brain_dir:
+                transcript_path = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                try:
+                    if transcript_path.is_file():
+                        self.__class__._processed_log_sizes[str(transcript_path)] = transcript_path.stat().st_size
+                    else:
+                        self.__class__._processed_log_sizes[str(transcript_path)] = 0
+                except Exception as e:
+                    logger.debug("Failed to initialize processed log size: %s", e)
 
         try:
             if resume_session:
-                self._ensure_session_holder(resume_session, self._agy_workspace, env, self._config.permission_mode)
+                self._ensure_session_holder(
+                    resume_session,
+                    self._agy_workspace,
+                    env,
+                    self._config.permission_mode,
+                    chat_id=self._config.chat_id,
+                    topic_id=self._config.topic_id,
+                )
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -548,6 +622,59 @@ class AntigravityCLI(BaseCLI):
             )
 
             reg, tracked = self._track_process(proc)
+
+            # Resolve the actual session ID as soon as the process starts creating its brain directory.
+            # Resolve the actual session ID as soon as the process starts.
+            if not requested_session_existed:
+                resolved_id = None
+                for _ in range(100):  # Poll up to 20 seconds (100 * 0.2s)
+                    if proc.returncode is not None:
+                        break
+
+                    # Method 1: Try to resolve from logs
+                    resolved_id = _resolve_session_id_from_logs(proc.pid)
+                    if resolved_id:
+                        logger.info("Antigravity: resolved actual session ID to %s early from logs", resolved_id)
+                        break
+
+                    # Method 2: Try to resolve from newest brain directory
+                    actual_brain_dir = _newest_brain_dir(_agy_state_root(env) / "brain")
+                    if actual_brain_dir:
+                        t_path = actual_brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                        if t_path.is_file():
+                            import time
+                            if time.time() - t_path.stat().st_mtime < 10.0:
+                                resolved_id = actual_brain_dir.name
+                                logger.info("Antigravity: resolved actual session ID to %s early from newest brain dir", resolved_id)
+                                break
+
+                    await asyncio.sleep(0.2)
+
+                if resolved_id:
+                    old_session_id = session_id
+                    session_id = resolved_id
+                    brain_dir = _agy_state_root(env) / "brain" / session_id
+
+                    # Update sync_in_progress
+                    self.__class__._sync_in_progress[session_id] = True
+                    self.__class__._sync_in_progress[old_session_id] = False
+
+                    # Clean up the session holder for the old/incorrect session ID
+                    self.__class__._terminate_holder(old_session_id)
+
+                    # Start the session holder for the actual session ID early so heartbeats can track it
+                    self._ensure_session_holder(
+                        session_id,
+                        self._agy_workspace,
+                        env,
+                        self._config.permission_mode,
+                        chat_id=chat_id,
+                        topic_id=topic_id,
+                    )
+
+                    # Initialize processed size for the actual transcript
+                    transcript_path = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                    self.__class__._processed_log_sizes[str(transcript_path)] = 0
 
             try:
                 timed_out = False
@@ -604,6 +731,9 @@ class AntigravityCLI(BaseCLI):
             actual_brain_dir = None
             if resume_session and requested_session_existed:
                 actual_brain_dir = brain_dir
+            elif resolved_id:
+                # If we resolved the actual session ID early during the run, trust it!
+                actual_brain_dir = _agy_state_root(env) / "brain" / resolved_id
             else:
                 actual_brain_dir = _resolve_brain_dir(self._agy_workspace, env)
 
@@ -625,10 +755,15 @@ class AntigravityCLI(BaseCLI):
 
             if session_id:
                 if resume_session and session_id != resume_session:
-                    holder = self.__class__._session_holders.pop(resume_session, None)
-                    if holder is not None:
-                        self.__class__._session_holders[session_id] = holder
-                self._ensure_session_holder(session_id, self._agy_workspace, env, self._config.permission_mode)
+                    self.__class__._terminate_holder(resume_session)
+                self._ensure_session_holder(
+                    session_id,
+                    self._agy_workspace,
+                    env,
+                    self._config.permission_mode,
+                    chat_id=self._config.chat_id,
+                    topic_id=self._config.topic_id,
+                )
                 
                 transcript_path = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
                 if transcript_path.is_file():
@@ -836,6 +971,47 @@ def _conv_id_for_cwd(root: Path, working_dir: Path) -> str | None:
         conv = mapping.get(key)
         if isinstance(conv, str) and conv:
             return conv
+    return None
+
+
+def _resolve_session_id_from_logs(pid: int) -> str | None:
+    """Resolve the active conversation ID of the process from its log file."""
+    import glob
+    import re
+    log_path = None
+    proc_accessible = False
+    try:
+        if os.path.isdir(f"/proc/{pid}"):
+            proc_accessible = True
+            for fd in ("1", "2"):
+                fd_path = f"/proc/{pid}/fd/{fd}"
+                if os.path.exists(fd_path):
+                    target = os.readlink(fd_path)
+                    if "antigravity-cli/log/cli-" in target:
+                        log_path = target
+                        break
+    except Exception:
+        pass
+
+    # Only fall back to finding the newest log if we cannot access /proc at all
+    if not log_path and not proc_accessible:
+        log_dir = os.path.expanduser("~/.gemini/antigravity-cli/log")
+        log_files = glob.glob(os.path.join(log_dir, "cli-*.log"))
+        if log_files:
+            log_path = max(log_files, key=os.path.getmtime)
+
+    if log_path and os.path.isfile(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+                matches = re.findall(
+                    r"(?:conversation\s*update\s*stream\s*for|conversation=|Streaming\s*conversation|Stream\s*completed\s*for)\s*([a-fA-F0-9\-]{36})",
+                    content,
+                )
+                if matches:
+                    return matches[-1]
+        except Exception:
+            pass
     return None
 
 
