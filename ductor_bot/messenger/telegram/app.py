@@ -423,6 +423,7 @@ class TelegramBot:
             r.message(Command(cmd, ignore_case=True))(self._on_command)
         r.message(F.forum_topic_created)(self._on_forum_topic_created)
         r.message(F.forum_topic_edited)(self._on_forum_topic_edited)
+        r.message(F.migrate_to_chat_id)(self._on_migrate_to_chat_id)
         r.message()(self._on_message)
         r.callback_query()(self._on_callback_query)
 
@@ -1378,6 +1379,14 @@ class TelegramBot:
     async def _mark_button_choice(self, chat_id: int, msg: Message, label: str) -> None:
         """Edit the bot message to append ``[USER ANSWER] label`` and remove the keyboard."""
         await mark_button_choice(self._bot, chat_id, msg, label)
+
+    async def _on_migrate_to_chat_id(self, message: Message) -> None:
+        """Handle group to supergroup migration by updating chat IDs."""
+        old_chat_id = message.chat.id
+        new_chat_id = message.migrate_to_chat_id
+        logger.info("Telegram group chat migrated from %s to %s", old_chat_id, new_chat_id)
+        if self._orchestrator:
+            await self._orchestrator.migrate_chat_id(old_chat_id, new_chat_id)
 
     # -- Messages --------------------------------------------------------------
 

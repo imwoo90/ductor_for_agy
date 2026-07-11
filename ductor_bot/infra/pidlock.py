@@ -125,6 +125,21 @@ def _alive_pids(pids: list[int]) -> list[int]:
     return [pid for pid in pids if _is_process_alive(pid)]
 
 
+def _is_process_ductor(pid: int) -> bool:
+    """Verify that the process with the given PID is actually ductor/python."""
+    if pid <= 0:
+        return False
+    # On non-Linux, fallback to basic liveness
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    if not cmdline_path.is_file():
+        return True
+    try:
+        content = cmdline_path.read_text(encoding="utf-8").replace("\x00", " ")
+        return "python" in content or "ductor" in content
+    except Exception:
+        return True  # Fallback to safe side
+
+
 def acquire_lock(*, pid_file: Path, kill_existing: bool = False) -> None:
     """Write PID file after ensuring no other instance is running.
 
@@ -141,9 +156,14 @@ def acquire_lock(*, pid_file: Path, kill_existing: bool = False) -> None:
         except (ValueError, OSError):
             existing_pid = None
 
-        if existing_pid is not None and _is_process_alive(existing_pid):
+        if (
+            existing_pid is not None
+            and _is_process_alive(existing_pid)
+            and _is_process_ductor(existing_pid)
+        ):
             if kill_existing:
                 _kill_and_wait(existing_pid)
+                pid_file.unlink(missing_ok=True)
             else:
                 logger.error(
                     "Another bot instance is already running (pid=%d). "
@@ -153,10 +173,19 @@ def acquire_lock(*, pid_file: Path, kill_existing: bool = False) -> None:
                 )
                 raise SystemExit(1)
         else:
-            logger.warning("Stale PID file found (pid=%s), overwriting", existing_pid)
+            logger.warning("Stale/unrelated PID file found (pid=%s), unlinking", existing_pid)
+            pid_file.unlink(missing_ok=True)
 
-    atomic_bytes_save(pid_file, str(os.getpid()).encode())
-    logger.info("PID lock acquired (pid=%d)", os.getpid())
+    # Now write the lock file atomically
+    try:
+        fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        logger.info("PID lock acquired (pid=%d)", os.getpid())
+    except FileExistsError:
+        # If someone else wrote it between our unlink and open, exit
+        logger.error("Race condition: another instance acquired the lock file concurrently.")
+        raise SystemExit(1)
 
 
 def release_lock(*, pid_file: Path) -> None:

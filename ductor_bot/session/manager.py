@@ -649,3 +649,26 @@ class SessionManager:
             atomic_json_save(self._path, {k: asdict(v) for k, v in sessions.items()})
 
         await asyncio.to_thread(_write)
+
+    async def migrate_chat_id(self, old_chat_id: int, new_chat_id: int) -> None:
+        """Migrate all session keys and internal chat IDs from old_chat_id to new_chat_id."""
+        async with self._lock:
+            sessions = await self._load()
+            migrated_sessions = {}
+            changed = False
+            for skey, session in sessions.items():
+                if session.chat_id == old_chat_id:
+                    session.chat_id = new_chat_id
+                    # Key format is: "{transport}:{chat_id}" or "{transport}:{chat_id}:{topic_id}"
+                    parsed_key = SessionKey.parse(skey)
+                    new_key = SessionKey(
+                        chat_id=new_chat_id,
+                        topic_id=parsed_key.topic_id,
+                        transport=parsed_key.transport,
+                    ).storage_key
+                    migrated_sessions[new_key] = session
+                    changed = True
+                else:
+                    migrated_sessions[skey] = session
+            if changed:
+                await self._save(migrated_sessions)

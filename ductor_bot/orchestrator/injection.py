@@ -69,7 +69,32 @@ async def _inject_prompt(  # noqa: PLR0913
     response = await orch._cli_service.execute(request)
 
     if active and response:
-        await _update_session(orch, active, response)
+        if _is_invalid_session(response):
+            logger.warning(
+                "Injected session stale (chat=%d session=%s) -- retrying with fresh session",
+                chat_id,
+                resume_id,
+            )
+            # End/clear the stale session
+            active.session_id = ""
+            await orch._sessions.update_session(active)
+
+            # Retry request
+            retry_request = AgentRequest(
+                prompt=prompt,
+                chat_id=chat_id,
+                topic_id=topic_id,
+                transport=transport,
+                process_label=process_label,
+                provider_override=active.provider,
+                model_override=active.model,
+                resume_session=None,
+                timeout_seconds=orch._config.cli_timeout,
+            )
+            response = await orch._cli_service.execute(retry_request)
+
+        if response:
+            await _update_session(orch, active, response)
 
     return response.result if response else ""
 

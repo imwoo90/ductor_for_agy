@@ -139,6 +139,8 @@ class AntigravityCLI(BaseCLI):
     _sync_in_progress: dict[str, bool] = {}
     _shutting_down = False
     _monitor_task: asyncio.Task[None] | None = None
+    _orchestrator = None
+    _message_bus = None
 
     @classmethod
     def shutdown_class(cls) -> None:
@@ -153,9 +155,10 @@ class AntigravityCLI(BaseCLI):
         if holders:
             logger.info("Shutdown killing %d active Antigravity session holder(s)", len(holders))
             for session_id, holder in holders:
-                holder.reader_task.cancel()
+                if holder.reader_task:
+                    holder.reader_task.cancel()
                 try:
-                    if holder.proc.poll() is None:
+                    if holder.master_fd != -1 and holder.proc.poll() is None:
                         pgid = os.getpgid(holder.proc.pid)
                         if pgid != os.getpgrp():
                             os.killpg(pgid, signal.SIGKILL)
@@ -165,112 +168,122 @@ class AntigravityCLI(BaseCLI):
                 except Exception as e:
                     logger.debug("Error killing process group for session %s: %s", session_id, e)
                 try:
-                    os.close(holder.master_fd)
+                    if holder.master_fd != -1:
+                        os.close(holder.master_fd)
                 except OSError:
                     pass
             cls._session_holders.clear()
 
     @classmethod
-    async def _run_monitor_loop(cls) -> None:
+    async def _check_logs_now(cls) -> None:
         import gc
         from ductor_bot.orchestrator.core import Orchestrator
         from ductor_bot.bus.bus import MessageBus
         from ductor_bot.bus.envelope import Envelope, Origin
 
-        logger.info("Antigravity background log monitor loop started")
+        orch = cls._orchestrator
+        bus = cls._message_bus
 
+        if orch is None or bus is None:
+            for obj in gc.get_objects():
+                if orch is None and isinstance(obj, Orchestrator):
+                    orch = obj
+                    cls._orchestrator = obj
+                if bus is None and isinstance(obj, MessageBus):
+                    bus = obj
+                    cls._message_bus = obj
+                if orch is not None and bus is not None:
+                    break
+
+        if orch is None or bus is None:
+            return
+
+        try:
+            marker_path = orch.paths.ductor_home / "restart-requested"
+            if marker_path.is_file():
+                logger.info("Antigravity Log Monitor: Restart marker detected early, shutting down class")
+                cls.shutdown_class()
+                return
+        except Exception as e:
+            logger.debug("Failed to check restart marker: %s", e)
+
+        try:
+            sessions = await orch._sessions.list_all()
+            for session in sessions:
+                chat_id = session.chat_id
+                topic_id = session.topic_id
+                transport = getattr(session, "transport", "tg")
+
+                provider_name = session.provider
+                if provider_name != "antigravity":
+                    continue
+
+                session_id = None
+                # Prioritize active running process session ID if one exists
+                for sid, holder in cls._session_holders.items():
+                    if holder.chat_id == chat_id and holder.topic_id == topic_id:
+                        if holder.proc.poll() is None:
+                            session_id = sid
+                            break
+
+                if not session_id:
+                    provider_data = session.provider_sessions.get(provider_name)
+                    if provider_data and provider_data.session_id:
+                        session_id = provider_data.session_id
+
+                if not session_id:
+                    continue
+
+                from ductor_bot.log_context import set_log_context
+                set_log_context(
+                    agent_name="main",
+                    operation="hb",
+                    chat_id=chat_id,
+                    topic=session.topic_name,
+                    session_id=session_id,
+                )
+
+                from ductor_bot.cli.antigravity_events import AntigravityLogParser
+                parser = AntigravityLogParser()
+                if not parser.is_session_active(session_id):
+                    continue
+
+                transcript_path = parser.get_transcript_path(session_id)
+                if not transcript_path.is_file():
+                    continue
+
+                prev_size = cls._processed_log_sizes.get(str(transcript_path))
+                new_size, formatted_text = parser.parse_log_delta(
+                    session_id, transcript_path, prev_size
+                )
+
+                if new_size is not None:
+                    cls._processed_log_sizes[str(transcript_path)] = new_size
+
+                if formatted_text:
+                    logger.info(
+                        "Antigravity Log Monitor: Submitting log delta to bus for chat %s topic %s",
+                        chat_id,
+                        topic_id,
+                    )
+                    envelope = Envelope(
+                        origin=Origin.HEARTBEAT,
+                        chat_id=chat_id,
+                        topic_id=topic_id,
+                        transport=transport,
+                        result_text=formatted_text,
+                    )
+                    await bus.submit(envelope)
+        except Exception as e:
+            logger.error("Error in Antigravity log checking: %s", e)
+
+    @classmethod
+    async def _run_monitor_loop(cls) -> None:
+        logger.info("Antigravity background log monitor loop started")
         while not cls._shutting_down:
             try:
                 await asyncio.sleep(5.0)
-
-                orch = None
-                bus = None
-                for obj in gc.get_objects():
-                    if orch is None and isinstance(obj, Orchestrator):
-                        orch = obj
-                    if bus is None and isinstance(obj, MessageBus):
-                        bus = obj
-                    if orch is not None and bus is not None:
-                        break
-
-                if orch is None or bus is None:
-                    continue
-
-                try:
-                    marker_path = orch.paths.ductor_home / "restart-requested"
-                    if marker_path.is_file():
-                        logger.info("Antigravity Log Monitor: Restart marker detected early, shutting down class")
-                        cls.shutdown_class()
-                        break
-                except Exception as e:
-                    logger.debug("Failed to check restart marker: %s", e)
-
-                sessions = await orch._sessions.list_all()
-                for session in sessions:
-                    chat_id = session.chat_id
-                    topic_id = session.topic_id
-                    transport = getattr(session, "transport", "tg")
-
-                    provider_name = session.provider
-                    if provider_name != "antigravity":
-                        continue
-
-                    session_id = None
-                    # Prioritize active running process session ID if one exists
-                    for sid, holder in cls._session_holders.items():
-                        if holder.chat_id == chat_id and holder.topic_id == topic_id:
-                            if holder.proc.poll() is None:
-                                session_id = sid
-                                break
-
-                    if not session_id:
-                        provider_data = session.provider_sessions.get(provider_name)
-                        if provider_data and provider_data.session_id:
-                            session_id = provider_data.session_id
-
-                    if not session_id:
-                        continue
-
-                    from ductor_bot.log_context import set_log_context
-                    set_log_context(
-                        agent_name="main",
-                        operation="hb",
-                        chat_id=chat_id,
-                        topic=session.topic_name,
-                        session_id=session_id,
-                    )
-
-                    from ductor_bot.cli.antigravity_events import AntigravityLogParser
-                    parser = AntigravityLogParser()
-                    if not parser.is_session_active(session_id):
-                        continue
-
-                    transcript_path = parser.get_transcript_path(session_id)
-                    if not transcript_path.is_file():
-                        continue
-
-                    prev_size = cls._processed_log_sizes.get(str(transcript_path))
-                    new_size, formatted_text = parser.parse_log_delta(
-                        session_id, transcript_path, prev_size
-                    )
-
-                    if new_size is not None:
-                        cls._processed_log_sizes[str(transcript_path)] = new_size
-
-                    if formatted_text:
-                        logger.info(
-                            "Antigravity Log Monitor: Submitting log delta to bus for chat %s topic %s",
-                            chat_id,
-                            topic_id,
-                        )
-                        envelope = Envelope(
-                            origin=Origin.HEARTBEAT,
-                            chat_id=chat_id,
-                            topic_id=topic_id,
-                            transport=transport,
-                            result_text=formatted_text,
-                        )
-                        await bus.submit(envelope)
+                await cls._check_logs_now()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -304,15 +317,16 @@ class AntigravityCLI(BaseCLI):
             logger.debug("No running event loop, skipping background log monitor task creation")
 
     @classmethod
-    def _terminate_holder(cls, session_id: str) -> None:
+    async def _terminate_holder(cls, session_id: str) -> None:
         """Terminate and clean up a specific session holder."""
         import os
         import signal
         holder = cls._session_holders.pop(session_id, None)
         if holder is not None:
-            holder.reader_task.cancel()
+            if holder.reader_task:
+                holder.reader_task.cancel()
             try:
-                if holder.proc.poll() is None:
+                if holder.master_fd != -1 and holder.proc.poll() is None:
                     try:
                         pgid = os.getpgid(holder.proc.pid)
                         if pgid != os.getpgrp():
@@ -321,16 +335,17 @@ class AntigravityCLI(BaseCLI):
                             holder.proc.kill()
                     except Exception:
                         holder.proc.kill()
-                    holder.proc.wait(timeout=1.0)
+                    await asyncio.to_thread(holder.proc.wait, 1.0)
             except Exception:
                 pass
             try:
-                os.close(holder.master_fd)
+                if holder.master_fd != -1:
+                    os.close(holder.master_fd)
             except OSError:
                 pass
 
     @classmethod
-    def _cleanup_expired_holders(cls) -> None:
+    async def _cleanup_expired_holders(cls) -> None:
         import time
         import signal
         import os
@@ -338,29 +353,31 @@ class AntigravityCLI(BaseCLI):
         expired_keys = []
         for session_id, holder in list(cls._session_holders.items()):
             # 24 hours = 86400 seconds
-            if now - holder.last_active > 86400.0 or holder.proc.poll() is not None:
+            if now - holder.last_active > 86400.0 or (holder.master_fd != -1 and holder.proc.poll() is not None):
                 expired_keys.append(session_id)
                 logger.info("Cleaning up session holder for %s", session_id)
-                holder.reader_task.cancel()
+                if holder.reader_task:
+                    holder.reader_task.cancel()
                 try:
-                    if holder.proc.poll() is None:
+                    if holder.master_fd != -1 and holder.proc.poll() is None:
                         pgid = os.getpgid(holder.proc.pid)
                         if pgid != os.getpgrp():
                             os.killpg(pgid, signal.SIGTERM)
                         else:
                             holder.proc.terminate()
-                        holder.proc.wait(timeout=2.0)
+                        await asyncio.to_thread(holder.proc.wait, 2.0)
                 except Exception as e:
                     logger.debug("Error killing process group for %s: %s", session_id, e)
                 try:
-                    os.close(holder.master_fd)
+                    if holder.master_fd != -1:
+                        os.close(holder.master_fd)
                 except OSError:
                     pass
         for key in expired_keys:
             cls._session_holders.pop(key, None)
 
     @classmethod
-    def _ensure_session_holder(
+    async def _ensure_session_holder(
         cls,
         session_id: str,
         workspace: Path,
@@ -372,11 +389,8 @@ class AntigravityCLI(BaseCLI):
         if getattr(cls, "_shutting_down", False):
             return
         import time
-        import pty
-        import subprocess
-        import os
         
-        cls._cleanup_expired_holders()
+        await cls._cleanup_expired_holders()
         
         # Check if the holder is already running and active
         holder = cls._session_holders.get(session_id)
@@ -389,9 +403,11 @@ class AntigravityCLI(BaseCLI):
                 return
             else:
                 logger.warning("Session holder for %s was dead, restarting", session_id)
-                holder.reader_task.cancel()
+                if holder.reader_task:
+                    holder.reader_task.cancel()
                 try:
-                    os.close(holder.master_fd)
+                    if holder.master_fd != -1:
+                        os.close(holder.master_fd)
                 except OSError:
                     pass
                 cls._session_holders.pop(session_id, None)
@@ -412,6 +428,9 @@ class AntigravityCLI(BaseCLI):
 
         try:
             import termios
+            import pty
+            import subprocess
+            import os
             master_fd, slave_fd = pty.openpty()
             try:
                 attrs = termios.tcgetattr(slave_fd)
@@ -500,6 +519,15 @@ class AntigravityCLI(BaseCLI):
 
         cmd.extend(self._config.cli_parameters)
 
+        # Prepend system prompts if configured
+        system_prompts = []
+        if self._config.system_prompt:
+            system_prompts.append(self._config.system_prompt)
+        if self._config.append_system_prompt:
+            system_prompts.append(self._config.append_system_prompt)
+        if system_prompts:
+            prompt = "\n\n".join(system_prompts) + f"\n\n{prompt}"
+
         # --print and its prompt value MUST be last and adjacent (see docstring).
         cmd += ["--print", prompt]
         return cmd
@@ -566,7 +594,7 @@ class AntigravityCLI(BaseCLI):
             for sid, holder in list(self.__class__._session_holders.items()):
                 if holder.chat_id == chat_id and holder.topic_id == topic_id:
                     logger.info("New session requested for chat=%s topic=%s, terminating old holder %s", chat_id, topic_id, sid)
-                    self.__class__._terminate_holder(sid)
+                    await self.__class__._terminate_holder(sid)
 
         requested_session_existed = False
         if resume_session:
@@ -602,7 +630,7 @@ class AntigravityCLI(BaseCLI):
 
         try:
             if resume_session:
-                self._ensure_session_holder(
+                await self._ensure_session_holder(
                     resume_session,
                     self._agy_workspace,
                     env,
@@ -660,10 +688,10 @@ class AntigravityCLI(BaseCLI):
                     self.__class__._sync_in_progress[old_session_id] = False
 
                     # Clean up the session holder for the old/incorrect session ID
-                    self.__class__._terminate_holder(old_session_id)
+                    await self.__class__._terminate_holder(old_session_id)
 
                     # Start the session holder for the actual session ID early so heartbeats can track it
-                    self._ensure_session_holder(
+                    await self._ensure_session_holder(
                         session_id,
                         self._agy_workspace,
                         env,
@@ -755,8 +783,8 @@ class AntigravityCLI(BaseCLI):
 
             if session_id:
                 if resume_session and session_id != resume_session:
-                    self.__class__._terminate_holder(resume_session)
-                self._ensure_session_holder(
+                    await self.__class__._terminate_holder(resume_session)
+                await self._ensure_session_holder(
                     session_id,
                     self._agy_workspace,
                     env,
@@ -764,6 +792,9 @@ class AntigravityCLI(BaseCLI):
                     chat_id=self._config.chat_id,
                     topic_id=self._config.topic_id,
                 )
+                
+                # Check for any remaining logs right before we record final size
+                await self.__class__._check_logs_now()
                 
                 transcript_path = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
                 if transcript_path.is_file():

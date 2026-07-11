@@ -243,3 +243,41 @@ class TestSessionMigration:
         assert is_new is False
         assert session.session_id == "legacy-sid"
         assert session.transport == "tg"
+
+    async def test_migrate_chat_id(self, tmp_path: Path) -> None:
+        """migrate_chat_id shifts all sessions under a chat ID to the new chat ID."""
+        _write_sessions(
+            tmp_path,
+            {
+                "tg:100": {
+                    "chat_id": 100,
+                    "transport": "tg",
+                    "provider": "claude",
+                    "model": "opus",
+                },
+                "tg:100:55": {
+                    "chat_id": 100,
+                    "topic_id": 55,
+                    "transport": "tg",
+                    "provider": "claude",
+                    "model": "opus",
+                },
+                "tg:200": {
+                    "chat_id": 200,
+                    "transport": "tg",
+                    "provider": "claude",
+                    "model": "opus",
+                },
+            },
+        )
+        mgr = _make_manager(tmp_path)
+        await mgr.migrate_chat_id(100, 300)
+
+        data = _read_sessions(tmp_path)
+        assert "tg:300" in data
+        assert "tg:300:55" in data
+        assert "tg:200" in data
+        assert "tg:100" not in data
+        assert "tg:100:55" not in data
+        assert data["tg:300"]["chat_id"] == 300
+        assert data["tg:300:55"]["chat_id"] == 300

@@ -61,6 +61,41 @@ _TRANSPORT_IDENTITY_CHANGED: dict[str, _IdentityCheck] = {
 }
 
 
+class AsyncRLock:
+    """Simple re-entrant lock for asyncio tasks."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner = None
+        self._count = 0
+
+    async def acquire(self) -> bool:
+        current_task = asyncio.current_task()
+        if self._owner == current_task:
+            self._count += 1
+            return True
+        await self._lock.acquire()
+        self._owner = current_task
+        self._count = 1
+        return True
+
+    def release(self) -> None:
+        current_task = asyncio.current_task()
+        if self._owner != current_task:
+            raise RuntimeError("Cannot release a lock you do not own")
+        self._count -= 1
+        if self._count == 0:
+            self._owner = None
+            self._lock.release()
+
+    async def __aenter__(self) -> AsyncRLock:
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.release()
+
+
 class AgentSupervisor:
     """Manages the main agent and dynamically created sub-agents.
 
@@ -81,7 +116,7 @@ class AgentSupervisor:
         self._running = False
         self._main_done: asyncio.Event = asyncio.Event()
         self._main_ready: asyncio.Event = asyncio.Event()
-        self._agents_lock = asyncio.Lock()
+        self._agents_lock = AsyncRLock()
 
         # Bus, internal API, shared knowledge, task hub — created lazily in start()
         self._bus: InterAgentBus | None = None
@@ -483,58 +518,61 @@ class AgentSupervisor:
 
     async def stop_agent(self, name: str) -> None:
         """Stop a sub-agent gracefully."""
-        if name == "main":
-            logger.warning("Cannot stop main agent via stop_agent()")
-            return
+        async with self._agents_lock:
+            if name == "main":
+                logger.warning("Cannot stop main agent via stop_agent()")
+                return
 
-        task = self._tasks.pop(name, None)
-        if task and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            task = self._tasks.pop(name, None)
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
-        stack = self._stacks.pop(name, None)
-        if stack:
-            with contextlib.suppress(Exception):
-                await stack.shutdown()
+            stack = self._stacks.pop(name, None)
+            if stack:
+                with contextlib.suppress(Exception):
+                    await stack.shutdown()
 
-        if self._bus:
-            self._bus.unregister(name)
+            if self._bus:
+                self._bus.unregister(name)
 
-        health = self._health.get(name)
-        if health:
-            health.mark_stopped()
+            health = self._health.get(name)
+            if health:
+                health.mark_stopped()
 
-        logger.info("Sub-agent '%s' stopped", name)
+            logger.info("Sub-agent '%s' stopped", name)
 
     async def start_agent_by_name(self, name: str) -> str:
         """Start a sub-agent by name from the registry. Returns status message."""
-        if name in self._stacks:
-            return f"Agent '{name}' is already running."
+        async with self._agents_lock:
+            if name in self._stacks:
+                return f"Agent '{name}' is already running."
 
-        agents = self._registry.load()
-        match = next((a for a in agents if a.name == name), None)
-        if match is None:
-            return f"Agent '{name}' not found in agents.json."
+            agents = self._registry.load()
+            match = next((a for a in agents if a.name == name), None)
+            if match is None:
+                return f"Agent '{name}' not found in agents.json."
 
-        await self._start_sub_agent(match)
-        return f"Agent '{name}' started."
+            await self._start_sub_agent(match)
+            return f"Agent '{name}' started."
 
     async def restart_agent(self, name: str) -> str:
         """Restart a sub-agent (stop + start). Returns status message."""
         if name == "main":
             return "Cannot restart main agent via this command. Use /restart instead."
 
-        agents = self._registry.load()
-        match = next((a for a in agents if a.name == name), None)
-        if match is None:
-            return f"Agent '{name}' not found in agents.json."
+        async with self._agents_lock:
+            agents = self._registry.load()
+            match = next((a for a in agents if a.name == name), None)
+            if match is None:
+                return f"Agent '{name}' not found in agents.json."
 
-        if name in self._stacks:
-            await self.stop_agent(name)
+            if name in self._stacks:
+                await self.stop_agent(name)
 
-        await self._start_sub_agent(match)
-        return f"Agent '{name}' restarted."
+            await self._start_sub_agent(match)
+            return f"Agent '{name}' restarted."
 
     # -- FileWatcher callback -----------------------------------------------
 

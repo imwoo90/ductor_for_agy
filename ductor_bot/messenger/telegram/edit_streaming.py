@@ -352,8 +352,23 @@ class EditStreamEditor:
             )
             self._s.consecutive_failures = 0
         except TelegramBadRequest as exc:
-            if "message is not modified" in str(exc).lower():
+            exc_str = str(exc).lower()
+            if "message is not modified" in exc_str:
                 return
+            if "can't parse entities" in exc_str or "character" in exc_str:
+                logger.warning("HTML edit failed due to entity parsing, falling back to plain text")
+                try:
+                    await self._bot.edit_message_text(
+                        text=display,
+                        chat_id=self._chat_id,
+                        message_id=self._s.active_msg.message_id,
+                        parse_mode=None,
+                    )
+                    self._s.consecutive_failures = 0
+                    return
+                except Exception as plain_exc:
+                    logger.warning("Plain text edit fallback also failed: %s", plain_exc)
+
             self._s.consecutive_failures += 1
             logger.warning(
                 "Edit failed (%d/%d): %s",

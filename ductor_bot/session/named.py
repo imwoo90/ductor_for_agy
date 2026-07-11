@@ -337,3 +337,19 @@ class NamedSessionRegistry:
         return {
             s.name for s in self._sessions.values() if s.chat_id == chat_id and s.status != "ended"
         }
+
+    async def migrate_chat_id(self, old_chat_id: int, new_chat_id: int) -> None:
+        """Migrate all named sessions from old_chat_id to new_chat_id."""
+        async with self._lock:
+            changed = False
+            migrated_sessions = {}
+            for (chat_id, name), session in self._sessions.items():
+                if chat_id == old_chat_id:
+                    session.chat_id = new_chat_id
+                    migrated_sessions[(new_chat_id, name)] = session
+                    changed = True
+                else:
+                    migrated_sessions[(chat_id, name)] = session
+            if changed:
+                self._sessions = migrated_sessions
+                self._persist()

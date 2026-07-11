@@ -86,3 +86,14 @@ def _reset_runtime_model_registries() -> Iterator[None]:
     yield
     reset_gemini_models()
     reset_antigravity_models()
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_antigravity_sessions() -> Iterator[None]:
+    """Clean up and clear all Antigravity CLI sessions between tests."""
+    from ductor_bot.cli.antigravity_provider import AntigravityCLI, _cleanup_on_exit
+    yield
+    try:
+        _cleanup_on_exit(AntigravityCLI)
+    except Exception:
+        pass

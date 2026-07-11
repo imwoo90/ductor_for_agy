@@ -114,9 +114,13 @@ class SharedKnowledgeSync:
         logger.info("SHAREDMEMORY.md changed, syncing to all agents")
         await self._sync_all()
 
-    async def sync_agent(self, mainmemory_path: Path) -> None:
+    async def sync_agent(self, mainmemory_path: Path, stack: AgentStack | None = None) -> None:
         """Inject shared knowledge into a single agent's MAINMEMORY.md."""
-        written = await asyncio.to_thread(_sync_agent_io, self._path, mainmemory_path)
+        if stack and stack.bot and stack.bot.orchestrator:
+            async with stack.bot.orchestrator._execution_lock:
+                written = await asyncio.to_thread(_sync_agent_io, self._path, mainmemory_path)
+        else:
+            written = await asyncio.to_thread(_sync_agent_io, self._path, mainmemory_path)
         if written:
             logger.info("Synced shared knowledge to %s", mainmemory_path)
 
@@ -124,6 +128,6 @@ class SharedKnowledgeSync:
         """Inject into all registered agents' MAINMEMORY.md files."""
         for name, stack in self._supervisor.stacks.items():
             try:
-                await self.sync_agent(stack.paths.mainmemory_path)
+                await self.sync_agent(stack.paths.mainmemory_path, stack=stack)
             except Exception:
                 logger.exception("Failed to sync shared knowledge to agent '%s'", name)

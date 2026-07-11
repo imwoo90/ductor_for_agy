@@ -118,3 +118,21 @@ class TestRecoveredRunning:
         recovered = reg2.pop_recovered_running()
         assert len(recovered) == 1
         assert recovered[0].last_prompt == "my prompt"
+
+
+class TestNamedSessionMigration:
+    async def test_migrate_chat_id(self, tmp_path: Path) -> None:
+        reg = _make_registry(tmp_path)
+        ns1 = reg.create(chat_id=100, provider="claude", model="opus", prompt_preview="hello")
+        ns2 = reg.create(chat_id=100, provider="codex", model="opus", prompt_preview="hi")
+        ns3 = reg.create(chat_id=200, provider="claude", model="opus", prompt_preview="other")
+
+        await reg.migrate_chat_id(100, 300)
+
+        assert reg.get(100, ns1.name) is None
+        assert reg.get(100, ns2.name) is None
+        assert reg.get(200, ns3.name) is not None
+
+        assert reg.get(300, ns1.name) is not None
+        assert reg.get(300, ns2.name) is not None
+        assert reg.get(300, ns1.name).chat_id == 300

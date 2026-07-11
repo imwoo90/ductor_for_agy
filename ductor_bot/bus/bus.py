@@ -71,6 +71,11 @@ class MessageBus:
         self._injector: SessionInjector | None = None
         self._pre_deliver: Callable[[Envelope], Awaitable[None]] | None = None
         self._audit: Callable[[Envelope], Awaitable[None]] | None = None
+        try:
+            from ductor_bot.cli.antigravity_provider import AntigravityCLI
+            AntigravityCLI._message_bus = self
+        except Exception:
+            pass
 
     @property
     def lock_pool(self) -> LockPool:

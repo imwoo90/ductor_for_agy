@@ -122,7 +122,14 @@ class AntigravityLogParser(LogParser):
                         for tc in tcalls:
                             name = tc.get("name", "unknown")
                             args = tc.get("args", {})
-                            args_str = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in args.items())
+                            # Filter or summarize large arguments for clean Telegram UI representation
+                            clean_args = {}
+                            for k, v in args.items():
+                                if k in ("CodeContent", "ReplacementContent", "ReplacementChunks", "TargetContent") or (isinstance(v, str) and len(v) > 200):
+                                    clean_args[k] = "<omitted...>"
+                                else:
+                                    clean_args[k] = v
+                            args_str = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in clean_args.items())
                             tool_calls.append(f"`{name}({args_str})`")
 
                     if status == "DONE" and not tcalls:

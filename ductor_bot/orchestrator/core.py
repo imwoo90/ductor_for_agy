@@ -136,6 +136,7 @@ class Orchestrator:
         self._named_sessions = NamedSessionRegistry(paths.named_sessions_path)
         self._process_registry = ProcessRegistry()
         self._lock_pool: LockPool | None = None
+        self._execution_lock = asyncio.Lock()
         self._cli_service = CLIService(
             config=CLIServiceConfig(
                 working_dir=str(paths.workspace),
@@ -204,6 +205,11 @@ class Orchestrator:
         self._task_hub: TaskHub | None = None  # Set by supervisor or __main__.py
         self._command_registry = CommandRegistry()
         self._register_commands()
+        try:
+            from ductor_bot.cli.antigravity_provider import AntigravityCLI
+            AntigravityCLI._orchestrator = self
+        except Exception:
+            pass
 
     @property
     def paths(self) -> DuctorPaths:
@@ -327,24 +333,25 @@ class Orchestrator:
         return await self._handle_message_impl(dispatch)
 
     async def _handle_message_impl(self, dispatch: _MessageDispatch) -> OrchestratorResult:
-        self._process_registry.clear_abort(dispatch.key.chat_id)
-        self._process_registry.clear_topic_abort(dispatch.key.chat_id, dispatch.key.topic_id)
-        logger.info("Message received text=%s", dispatch.cmd[:80])
+        async with self._execution_lock:
+            self._process_registry.clear_abort(dispatch.key.chat_id)
+            self._process_registry.clear_topic_abort(dispatch.key.chat_id, dispatch.key.topic_id)
+            logger.info("Message received text=%s", dispatch.cmd[:80])
 
-        patterns = detect_suspicious_patterns(dispatch.text)
-        if patterns:
-            logger.warning("Suspicious input patterns: %s", ", ".join(patterns))
+            patterns = detect_suspicious_patterns(dispatch.text)
+            if patterns:
+                logger.warning("Suspicious input patterns: %s", ", ".join(patterns))
 
-        try:
-            return await self._route_message(dispatch)
-        except asyncio.CancelledError:
-            raise
-        except (CLIError, StreamError, SessionError, CronError, WebhookError, WorkspaceError):
-            logger.exception("Domain error in handle_message")
-            return OrchestratorResult(text="An internal error occurred. Please try again.")
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError):
-            logger.exception("Unexpected error in handle_message")
-            return OrchestratorResult(text="An internal error occurred. Please try again.")
+            try:
+                return await self._route_message(dispatch)
+            except asyncio.CancelledError:
+                raise
+            except (CLIError, StreamError, SessionError, CronError, WebhookError, WorkspaceError):
+                logger.exception("Domain error in handle_message")
+                return OrchestratorResult(text="An internal error occurred. Please try again.")
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+                logger.exception("Unexpected error in handle_message")
+                return OrchestratorResult(text="An internal error occurred. Please try again.")
 
     async def _route_message(self, dispatch: _MessageDispatch) -> OrchestratorResult:
         result = await self._command_registry.dispatch(
@@ -763,7 +770,8 @@ class Orchestrator:
             handle_interagent_message as _handle_ia,
         )
 
-        return await _handle_ia(self, sender, message, new_session=new_session)
+        async with self._execution_lock:
+            return await _handle_ia(self, sender, message, new_session=new_session)
 
     async def handle_async_interagent_result(
         self,
@@ -790,12 +798,18 @@ class Orchestrator:
         """Execute *prompt* in the active session (fulfils ``SessionInjector`` protocol)."""
         from ductor_bot.orchestrator.injection import _inject_prompt
 
-        return await _inject_prompt(
-            self, prompt, chat_id, label, topic_id=topic_id, transport=transport
-        )
+        async with self._execution_lock:
+            return await _inject_prompt(
+                self, prompt, chat_id, label, topic_id=topic_id, transport=transport
+            )
 
     async def shutdown(self) -> None:
         """Cleanup on bot shutdown."""
         from ductor_bot.orchestrator.lifecycle import shutdown
 
         await shutdown(self)
+
+    async def migrate_chat_id(self, old_chat_id: int, new_chat_id: int) -> None:
+        """Migrate all session data and named sessions to new chat_id."""
+        await self._sessions.migrate_chat_id(old_chat_id, new_chat_id)
+        await self._named_sessions.migrate_chat_id(old_chat_id, new_chat_id)
