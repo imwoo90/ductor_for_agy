@@ -153,10 +153,7 @@ The user has TWO ways to use a sub-agent:
 - `python3 tools/agent_tools/edit_shared_knowledge.py`
 
 #### B. Antigravity 프로바이더 (PTY 웜로딩)
-파이썬 스크립트 도구 대신 **안티그래비티 런타임이 제공하는 네이티브 도구**를 사용합니다:
-- **에이전트 정의**: `define_subagent` 도구 호출로 새 역할과 프롬프트 선언.
-- **에이전트 소환**: `invoke_subagent` 도구 호출로 작업을 비동기 위임.
-- **에이전트 통신**: `send_message` 도구로 구동 중인 서브 에이전트와 메시지 교환.
+파이썬 스크립트 도구 대신 **안티그래비티 런타임 환경에 주입된 네이티브 서브 에이전트 및 메시지 통신 도구**를 사용합니다.
 * **주의**: 에이전트를 비동기 호출한 후에는 즉시 도구 호출을 끝내고 대기하여 호출 완료 노티를 받아야 합니다.
 
 ---
